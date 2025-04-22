@@ -1,0 +1,63 @@
+{
+  "name": "Financial Analysis Agent",
+  "description": "Performs financial analysis including valuation metrics, trend analysis, and financial insights.",
+  "url": "https://financial-agent.example.com",
+  "provider": {
+    "organization": "Financial Analysts Inc.",
+    "url": "https://financial-analysts.example.com"
+  },
+  "version": "1.0.0",
+  "documentationUrl": "https://financial-agent.example.com/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "stateTransitionHistory": true
+  },
+  "authentication": {
+    "schemes": ["none"]
+  },
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text"],
+  "skills": [
+    {
+      "id": "financial-metrics",
+      "name": "Financial Metrics Analysis",
+      "description": "Analyze key financial metrics for companies",
+      "tags": ["finance", "metrics", "valuation"],
+      "examples": [
+        "What is the P/E ratio for Apple?",
+        "Calculate the intrinsic value of Microsoft shares"
+      ]
+    },
+    {
+      "id": "trend-analysis",
+      "name": "Financial Trend Analysis",
+      "description": "Analyze financial trends over time",
+      "tags": ["finance", "trends", "time-series"],
+      "examples": [
+        "How has Apple's profit margin changed over the last 3 years?",
+        "Show me the revenue growth trend for Microsoft"
+      ]
+    },
+    {
+      "id": "investment-recommendations",
+      "name": "Investment Recommendations",
+      "description": "Provide investment recommendations based on financial analysis",
+      "tags": ["finance", "investment", "recommendations"],
+      "examples": [
+        "Should I invest in Apple based on their financial metrics?",
+        "Give me an investment rating for Microsoft"
+      ]
+    },
+    {
+      "id": "market-overview",
+      "name": "Market Overview",
+      "description": "Provide an overview of market indices and trends",
+      "tags": ["finance", "market", "indices"],
+      "examples": [
+        "What's the current state of the S&P 500?",
+        "How is the NASDAQ performing today?"
+      ]
+    }
+  ]
+} 

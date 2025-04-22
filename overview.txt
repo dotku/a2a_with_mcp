@@ -1,0 +1,105 @@
+﻿Project Overview: Multi-Agent Market Research & Financial Analysis System
+1. Purpose & Scope
+* Build a modular, AI-driven pipeline for market research and financial analysis.
+
+* Use Google’s Agent-2-Agent (A2A) protocol for inter-agent messaging.
+
+* Leverage Anthropics’ Model Context Protocol (MCP) for structured tool calls and context tracking.
+
+* Centralize all agent data operations through a shared PostgreSQL MCP server for consistent, read-only data access across agents.
+
+* Provide optional data scraping and analysis—agents are invoked only when their functionality is explicitly requested by the user (e.g., greeting-only queries can bypass scraping).
+
+* Deliver optional visual reporting when requested.
+
+2. High-Level Architecture
+   * User Request → Orchestrator Agent → (optional) Scraper+Processor Agent
+   *                                                        ↓
+   *                          (optional) Financial Agent → PostgreSQL MCP Server
+   *                                                        ↑
+   *                          (optional) Sentiment Analysis Agent ←──────────────
+   *                                                        ↓
+   *                          (optional) Visualization Agent → User
+
+
+3. Agents & Responsibilities
+   * Orchestrator Agent
+• Serves as the central controller: interprets user intent and determines which downstream agents to invoke.
+• Can respond directly (e.g., greetings, help prompts) without invoking any agents.
+• Initiates scraping by sending a request to Scraper+Processor only if data collection is needed.
+• Coordinates access to shared data via the PostgreSQL MCP server.
+• Optionally invokes Visualization Agent when visual output is requested.
+• Aggregates all agent outputs and constructs the final response (text summary, data tables, or visuals).
+
+   * Scraper + Processor Agent
+• Optional: Fetches raw data from specified sources (APIs, websites) only if triggered by the Orchestrator.
+• Cleans, normalizes, and structures data via MCP-defined scraping tools.
+•Ingests data into postgres db
+
+   * Financial Agent
+• Optional: Activated when the user requests financial metrics, valuation, or trend analysis.
+• Fetches required financial data directly from the PostgreSQL MCP server.
+• Computes valuation metrics, ratios, and trend analyses via MCP financial-data tool calls.
+• Sends insights back to the Orchestrator.
+
+   * Sentiment Analysis Agent
+• Optional: Activated when the user requests sentiment insights.
+• Retrieves textual datasets from the PostgreSQL MCP server.
+• Performs sentiment scoring and summary via MCP sentiment-analysis tools.
+• Returns sentiment insights to the Orchestrator.
+
+   * Visualization Agent
+• Optional: Activated only when the user explicitly requests charts or dashboards.
+• Retrieves cleaned and/or processed insights from the PostgreSQL MCP server.
+• Generates visual assets (time-series plots, bar/line charts) via MCP visualization tools.
+• Returns visuals or dashboard configurations to the Orchestrator for delivery.
+
+4. Communications & Protocols
+      * A2A (Agent-to-Agent)
+• Defines JSON message schemas for requests and responses.
+• Supports asynchronous, decoupled communication among agents.
+
+      * MCP (Model Context Protocol)
+• Specifies input/output schemas for external tools (scraping, finance, sentiment, visualization).
+• Manages context: logs tool calls, results, and prompt history across all agents.
+• Powers the PostgreSQL MCP server integration for shared read-only data access across agents.
+
+5. Data Flow & Tool Integration
+         1. User→Orchestrator: Interpret natural-language intent.
+
+            * If no data/action is required (e.g., greeting), Orchestrator responds immediately.
+
+               2. Orchestrator (Conditional): If data is needed → Orchestrator→Scraper+Processor: A2A call { type: "scrape", parameters: {...} }.
+
+               3. Scraper+Processor→MCP Scraping Tool: Execute web/API scraping.
+
+               4. Scraper+Processor→Orchestrator: Return cleaned/structured data.
+
+               5. Orchestrator (Conditional):
+
+                  * If financial analysis requested → Financial Agent→PostgreSQL MCP Server → Perform computations.
+
+                  * If sentiment analysis requested → Sentiment Agent→PostgreSQL MCP Server → Run sentiment pipelines.
+
+                     6. Financial/Sentiment Agents→Orchestrator: Return insights.
+
+                     7. Orchestrator (Conditional): If visualization requested → Visualization Agent→PostgreSQL MCP Server → Visualizes insights.
+
+                     8. Visualization Agent→Orchestrator: Return visual assets.
+
+                     9. Orchestrator→User: Deliver final response.
+
+6. Framework Preferences
+                        * Orchestrator Agent: Google Agent Development Kit (ADK) for robust, first-class orchestration and lifecycle management on Google Cloud.
+
+                        * Scraper + Processor Agent: LlamaIndex for powerful indexing and retrieval of unstructured scraped data, integrated with MCP scraping tools.
+
+                        * Financial Agent: LangGraph for fine-grained, graph-based workflow control and iterative financial model execution.
+
+                        * Sentiment Analysis Agent: CrewAI Open-Source SDK for rapid deployment of sentiment crews and custom analysis workflows.
+
+                        * Visualization Agent: [Your choice here—e.g., Plotly or Matplotlib via MCP visualization tool] to generate interactive charts and dashboards.
+
+                        * Data Layer (shared): PostgreSQL MCP Server for shared, read-only data access across all agents.
+
+                           *
