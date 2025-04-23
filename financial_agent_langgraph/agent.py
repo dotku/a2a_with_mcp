@@ -3,18 +3,18 @@ Financial Agent based on LangGraph for financial analysis.
 """
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
-import json
-import random
+from datetime import datetime
 import os
 import traceback
+import asyncio
 from uuid import uuid4
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.graph import StateGraph, END, MessagesState, START
 from langgraph.prebuilt import ToolNode
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+import atexit
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Load environment variables before importing any models
 load_dotenv()
@@ -44,289 +44,93 @@ try:
 except Exception as e:
     logger.error(f"Failed to set up file logging: {e}")
 
-# Dummy financial data (as a placeholder for PostgreSQL MCP server data)
-DUMMY_FINANCIAL_DATA = {
-    "companies": {
-        "AAPL": {
-            "name": "Apple Inc.",
-            "sector": "Technology",
-            "financial_metrics": {
-                "revenue": [365.82, 394.33, 365.82],  # In billions USD, last 3 years
-                "profit_margin": [0.25, 0.24, 0.23],
-                "pe_ratio": 27.5,
-                "price_to_book": 35.9,
-                "dividend_yield": 0.51,
-                "debt_to_equity": 1.9,
-                "roi": 0.45,
-                "eps_growth": 0.09,
-                "cash_flow": 121.1,  # In billions USD
-            },
-            "stock_price": {
-                "current": 175.50,
-                "52_week_high": 198.23,
-                "52_week_low": 143.90,
-                "avg_volume": 60000000,
-            },
-            "historical_prices": {
-                # Format: [timestamp, price]
-                "daily": [[int((datetime.now() - timedelta(days=i)).timestamp()) * 1000, 
-                          175.50 - random.uniform(-5, 5)] for i in range(30)],
-                "weekly": [[int((datetime.now() - timedelta(weeks=i)).timestamp()) * 1000, 
-                           175.50 - random.uniform(-10, 10)] for i in range(12)],
-            }
-        },
-        "MSFT": {
-            "name": "Microsoft Corporation",
-            "sector": "Technology",
-            "financial_metrics": {
-                "revenue": [211.92, 198.27, 168.09],  # In billions USD, last 3 years
-                "profit_margin": [0.36, 0.37, 0.34],
-                "pe_ratio": 33.6,
-                "price_to_book": 12.8,
-                "dividend_yield": 0.72,
-                "debt_to_equity": 0.42,
-                "roi": 0.39,
-                "eps_growth": 0.18,
-                "cash_flow": 89.5,  # In billions USD
-            },
-            "stock_price": {
-                "current": 407.48,
-                "52_week_high": 434.90,
-                "52_week_low": 309.98,
-                "avg_volume": 26000000,
-            },
-            "historical_prices": {
-                # Format: [timestamp, price]
-                "daily": [[int((datetime.now() - timedelta(days=i)).timestamp()) * 1000, 
-                          407.48 - random.uniform(-8, 8)] for i in range(30)],
-                "weekly": [[int((datetime.now() - timedelta(weeks=i)).timestamp()) * 1000, 
-                           407.48 - random.uniform(-15, 15)] for i in range(12)],
-            }
-        }
-    },
-    "market_indices": {
-        "S&P500": {
-            "current": 5021.84,
-            "change": 0.57,
-            "historical": [[int((datetime.now() - timedelta(days=i)).timestamp()) * 1000, 
-                           5021.84 - random.uniform(-50, 50)] for i in range(30)]
-        },
-        "NASDAQ": {
-            "current": 15990.66,
-            "change": 1.12,
-            "historical": [[int((datetime.now() - timedelta(days=i)).timestamp()) * 1000, 
-                           15990.66 - random.uniform(-150, 150)] for i in range(30)]
-        }
+# Configure the Postgres MCP server
+MCP_SERVER_CONFIG = {
+    "postgres": {
+        "command": "python3",
+        "args": ["MCP-servers/postgres_mcp.py"],
+        "transport": "stdio",
     }
 }
 
-# Define custom financial tools
-@tool
-def get_company_financial_metrics(ticker: str) -> Dict[str, Any]:
-    """
-    Get financial metrics for a company by ticker symbol.
-    
-    Args:
-        ticker: The stock ticker symbol (e.g., 'AAPL')
-        
-    Returns:
-        Company financial metrics
-    """
-    logger.info(f"Tool called: get_company_financial_metrics for {ticker}")
-    ticker = ticker.upper()
-    if ticker not in DUMMY_FINANCIAL_DATA["companies"]:
-        logger.warning(f"Company with ticker {ticker} not found")
-        return {"error": f"Company with ticker {ticker} not found."}
-    
-    result = DUMMY_FINANCIAL_DATA["companies"][ticker]["financial_metrics"]
-    logger.info(f"Returning financial metrics for {ticker}")
-    return result
+# Initialize MCP client and tools
+mcp_client = None
+tools = []
 
-@tool
-def get_company_stock_info(ticker: str) -> Dict[str, Any]:
-    """
-    Get current stock information for a company by ticker symbol.
-    
-    Args:
-        ticker: The stock ticker symbol (e.g., 'AAPL')
-        
-    Returns:
-        Current stock information
-    """
-    logger.info(f"Tool called: get_company_stock_info for {ticker}")
-    ticker = ticker.upper()
-    if ticker not in DUMMY_FINANCIAL_DATA["companies"]:
-        logger.warning(f"Company with ticker {ticker} not found")
-        return {"error": f"Company with ticker {ticker} not found."}
-    
-    result = DUMMY_FINANCIAL_DATA["companies"][ticker]["stock_price"]
-    logger.info(f"Returning stock info for {ticker}: {result}")
-    return result
+# Initialize tool_node, it will be updated later
+tool_node = ToolNode([]) # Start with an empty list, will be updated
 
-@tool
-def get_historical_prices(ticker: str, timeframe: str = "daily") -> List[List[float]]:
-    """
-    Get historical price data for a company.
+# Async function to initialize MCP client
+async def init_mcp_client():
+    """Initialize the MCP client asynchronously."""
+    global mcp_client, tools
     
-    Args:
-        ticker: The stock ticker symbol (e.g., 'AAPL')
-        timeframe: 'daily' or 'weekly'
-        
-    Returns:
-        List of historical price data as [timestamp, price]
-    """
-    ticker = ticker.upper()
-    if ticker not in DUMMY_FINANCIAL_DATA["companies"]:
-        return {"error": f"Company with ticker {ticker} not found."}
-    
-    if timeframe not in ["daily", "weekly"]:
-        return {"error": f"Invalid timeframe: {timeframe}. Use 'daily' or 'weekly'."}
-    
-    return DUMMY_FINANCIAL_DATA["companies"][ticker]["historical_prices"][timeframe]
+    try:
+        logger.info("Initializing MCP client asynchronously...")
+        mcp_client = MultiServerMCPClient(MCP_SERVER_CONFIG)
+        await mcp_client.__aenter__()
+        tools = mcp_client.get_tools()
+        logger.info(f"MCP client initialized with tools: {[t.name for t in tools]}")
+        return tools
+    except Exception as e:
+        logger.error(f"Failed to initialize MCP client: {e}")
+        logger.error(traceback.format_exc())
+        return []
 
-@tool
-def calculate_valuation_metrics(ticker: str) -> Dict[str, Any]:
-    """
-    Calculate key valuation metrics for a company.
-    
-    Args:
-        ticker: The stock ticker symbol (e.g., 'AAPL')
-        
-    Returns:
-        Dictionary of valuation metrics
-    """
-    ticker = ticker.upper()
-    if ticker not in DUMMY_FINANCIAL_DATA["companies"]:
-        return {"error": f"Company with ticker {ticker} not found."}
-    
-    company = DUMMY_FINANCIAL_DATA["companies"][ticker]
-    metrics = company["financial_metrics"]
-    stock = company["stock_price"]
-    
-    # Calculate some derived metrics
-    result = {
-        "intrinsic_value": round(stock["current"] * (1 + metrics["eps_growth"]) * 
-                          (1 + metrics["profit_margin"]), 2),
-        "price_to_sales": round(stock["current"] / (metrics["revenue"][-1] / 1e9), 2),
-        "enterprise_value": round(stock["current"] * stock["avg_volume"] / 1e6 + 
-                           metrics["debt_to_equity"] * metrics["cash_flow"], 2),
-        "financial_health_score": round((metrics["profit_margin"][-1] * 0.3 + 
-                                 (1 / metrics["debt_to_equity"]) * 0.3 +
-                                 metrics["roi"] * 0.4) * 10, 1),
-    }
-    
-    return result
+# Function to clean up MCP client on exit
+async def cleanup_mcp():
+    """Clean up MCP client asynchronously."""
+    global mcp_client
+    if mcp_client:
+        try:
+            await mcp_client.__aexit__(None, None, None)
+            logger.info("MCP client shut down")
+        except Exception as e:
+            logger.error(f"Error shutting down MCP client: {e}")
 
-@tool
-def get_market_trends() -> Dict[str, Any]:
-    """
-    Get overall market trends and indices.
-    
-    Returns:
-        Dictionary of market indices and trends
-    """
-    return DUMMY_FINANCIAL_DATA["market_indices"]
+atexit.register(lambda: asyncio.create_task(cleanup_mcp()))
 
-@tool
-def analyze_financial_performance(ticker: str) -> Dict[str, Any]:
-    """
-    Perform comprehensive financial analysis on a company.
-    
-    Args:
-        ticker: The stock ticker symbol (e.g., 'AAPL')
-        
-    Returns:
-        Comprehensive financial analysis
-    """
-    ticker = ticker.upper()
-    if ticker not in DUMMY_FINANCIAL_DATA["companies"]:
-        return {"error": f"Company with ticker {ticker} not found."}
-    
-    company = DUMMY_FINANCIAL_DATA["companies"][ticker]
-    metrics = company["financial_metrics"]
-    
-    # Calculate revenue growth
-    rev = metrics["revenue"]
-    revenue_growth = [(rev[i] - rev[i+1]) / rev[i+1] for i in range(len(rev)-1)]
-    
-    # Perform analysis
-    analysis = {
-        "name": company["name"],
-        "sector": company["sector"],
-        "summary": {
-            "revenue_growth": [f"{g * 100:.2f}%" for g in revenue_growth],
-            "profit_margin_trend": "stable" if abs(metrics["profit_margin"][0] - metrics["profit_margin"][-1]) < 0.03
-                                   else "improving" if metrics["profit_margin"][0] > metrics["profit_margin"][-1]
-                                   else "declining",
-            "valuation": "high" if metrics["pe_ratio"] > 30 else "moderate" if metrics["pe_ratio"] > 15 else "low",
-            "financial_health": "strong" if metrics["debt_to_equity"] < 1 else "moderate" if metrics["debt_to_equity"] < 2 else "concerning",
-            "investment_rating": "buy" if metrics["roi"] > 0.4 and metrics["eps_growth"] > 0.1
-                                else "hold" if metrics["roi"] > 0.3 or metrics["eps_growth"] > 0.05
-                                else "sell"
-        },
-        "detailed_metrics": metrics,
-    }
-    
-    return analysis
-
-# Create the financial analysis tools
-tools = [
-    get_company_financial_metrics,
-    get_company_stock_info,
-    get_historical_prices,
-    calculate_valuation_metrics,
-    get_market_trends,
-    analyze_financial_performance
-]
-
-# Create a ToolNode for executing tools
-tool_node = ToolNode(tools)
-
-# Initialize the LLM with the API key from environment
 api_key = os.getenv("OPENAI_API_KEY")
 logger.info(f"API key available: {api_key is not None}")
 
 if api_key:
-    # If we have an API key, use a real model
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    # Bind tools to the LLM
-    model_with_tools = llm.bind_tools(tools)
-    logger.info("Using OpenAI model with tools")
+    model_with_tools = llm # Bind tools later after initialization
+    logger.info("Using OpenAI model")
 else:
-    # Fallback to a simple fake response mechanism to avoid API dependency
-    logger.info("No API key found. Using fake response mode for development.")
-    
-    # Define a simple function to handle requests without needing an API
+    logger.warning("No API key found. Using fake response mode for development.")
     def model_with_tools(messages):
         query = messages[-1].content if messages else ""
         logger.info(f"Received query in fake mode: {query}")
+        response = AIMessage(content="I need to access the PostgreSQL database to provide financial data. Please ensure the database is properly configured and the MCP server is running.")
+        logger.info(f"Fake mode returning database response: {response.content}")
+        return response
+
+mcp_initialized = False
+
+async def ensure_mcp_initialized():
+    """Ensure MCP client is initialized before processing tasks."""
+    global mcp_initialized, model_with_tools, tools, tool_node
+    
+    if not mcp_initialized:
+        logger.info("First-time MCP initialization")
+        loaded_tools = await init_mcp_client()
         
-        # Check for common query patterns and return appropriate responses
-        if "AAPL" in query or "Apple" in query:
-            response = AIMessage(content="Based on my analysis of Apple (AAPL), the company has a P/E ratio of 27.5, with a profit margin of 25%. Their stock is currently trading at $175.50.")
-            logger.info(f"Fake mode returning Apple response: {response.content}")
-            return response
-        elif "MSFT" in query or "Microsoft" in query:
-            response = AIMessage(content="Microsoft (MSFT) shows strong financial health with a profit margin of 36% and PE ratio of 33.6. Their stock is currently trading at $407.48.")
-            logger.info(f"Fake mode returning Microsoft response: {response.content}")
-            return response
-        elif "market" in query.lower() or "index" in query.lower():
-            response = AIMessage(content="The current market trends show the S&P500 at 5021.84 and NASDAQ at 15990.66. Both indices have been showing positive momentum recently.")
-            logger.info(f"Fake mode returning market response: {response.content}")
-            return response
-        elif "current" in query.lower() and ("stock" in query.lower() or "price" in query.lower()):
-            if "AAPL" in query:
-                response = AIMessage(content="The current stock price for Apple (AAPL) is $175.50.")
-                logger.info(f"Fake mode returning Apple current price: {response.content}")
-                return response
-            elif "MSFT" in query:
-                response = AIMessage(content="The current stock price for Microsoft (MSFT) is $407.48.")
-                logger.info(f"Fake mode returning Microsoft current price: {response.content}")
-                return response
+        if loaded_tools:
+            tools = loaded_tools # Update the global tools list
+            tool_node = ToolNode(tools) # Create the REAL ToolNode with loaded tools
+            logger.info(f"ToolNode initialized with {len(tools)} tools.")
+            if api_key:
+                model_with_tools = llm.bind_tools(tools) 
+                logger.info(f"Tools bound to model: {len(tools)} tools available")
         else:
-            response = AIMessage(content="Based on the financial data available, I can provide insights into company performance, valuation metrics, and market trends. Please specify a company ticker or market index for more detailed analysis.")
-            logger.info(f"Fake mode returning default response: {response.content}")
-            return response
+            logger.warning("MCP tools not initialized. Using empty ToolNode.")
+            tool_node = ToolNode([]) # Ensure tool_node is a ToolNode even if empty
+            
+        mcp_initialized = True
+        
+    # Return the globally updated tools list
+    return tools
 
 def extract_task_from_message(task: Task) -> Dict[str, Any]:
     """Extract task information from a message."""
@@ -386,10 +190,26 @@ def call_model(state: MessagesState):
         messages = state["messages"]
         logger.info(f"Calling model with messages: {messages}")
         
-        # Add system prompt for financial analysis
+        # Add system prompt for financial analysis with Postgres
         system_message = HumanMessage(content="""
-        You are a financial analysis expert. Please analyze the request and use your financial tools to provide insights.
-        Only use the tools available to you. Don't make up information.
+        You are a financial analysis expert with access to a PostgreSQL database. 
+        You can use the following tools to help with your analysis:
+        
+        - query: Run SQL queries against the database to get financial data
+          Example: SELECT * FROM stocks WHERE symbol = 'AAPL';
+          
+        - fetch_financial_snapshot: Get the latest financial snapshot data
+          This returns the latest consolidated financial data as a JSON object
+        
+        Database schema:
+        - stocks (symbol TEXT, price NUMERIC, volume INTEGER, timestamp TIMESTAMP)
+        - financial_snapshot (id SERIAL, data JSONB, created_at TIMESTAMP)
+        - companies (ticker TEXT, name TEXT, sector TEXT, industry TEXT)
+        - financial_metrics (ticker TEXT, metric TEXT, value NUMERIC, period TEXT)
+        
+        Always verify the data available in the database before making claims.
+        When using the 'query' tool, make sure to write proper SQL queries.
+        Provide clear insights based on the data returned from the database.
         """)
         
         # Add the system message at the beginning if not already there
@@ -406,26 +226,26 @@ def call_model(state: MessagesState):
             else:
                 # For the RunnableBinding version
                 logger.info("Using .invoke() method for model")
-                response = model_with_tools.invoke(messages)
+                response = model_with_tools.invoke(messages) # Note: This might need to be async if model_with_tools is async
             
             logger.info(f"Model response received: {response}")
-            return {"messages": [response]}
+            return {"messages": messages + [response]}
         except Exception as e:
             logger.error(f"Error calling model: {e}")
             logger.error(traceback.format_exc())
             # Return a fallback response
             error_msg = AIMessage(content=f"I encountered an error while analyzing your request: {str(e)}")
-            return {"messages": [error_msg]}
+            return {"messages": messages + [error_msg]}
     except Exception as e:
         logger.error(f"Unexpected error in call_model: {e}")
         logger.error(traceback.format_exc())
         # Return an empty response as fallback
         error_msg = AIMessage(content="I encountered an unexpected error while processing your request.")
-        return {"messages": [error_msg]}
+        return {"messages": messages + [error_msg]}
 
-def process_financial_task(task: Task) -> Any:
+async def process_financial_task_async(task: Task) -> Any:
     """
-    Process a financial analysis task using LangGraph.
+    Process a financial analysis task using LangGraph asynchronously.
     
     Args:
         task: The A2A Task object
@@ -434,100 +254,91 @@ def process_financial_task(task: Task) -> Any:
         Updated task with results
     """
     try:
+        # Ensure MCP is initialized and ToolNode is updated
+        await ensure_mcp_initialized()
+        
         # Extract information from the task
         logger.info(f"Starting to process financial task: {task.id}")
         logger.debug(f"Full task details: {task}")
         
         state = extract_task_from_message(task)
-        
-        # Log the state for debugging
         logger.info(f"Extracted state: {state}")
         
-        # Get the messages from the state
         messages = state["messages"]
-        
-        # Add system prompt for financial analysis
         system_message = HumanMessage(content="""
-        You are a financial analysis expert. Please analyze the request and use your financial tools to provide insights.
-        Only use the tools available to you. Don't make up information.
-        """)
+        You are a financial analysis expert with access to a PostgreSQL database. 
+        You can use the following tools to help with your analysis:
         
-        # Add the system message at the beginning
+        - query: Run SQL queries against the database to get financial data
+          Example: SELECT * FROM stocks WHERE symbol = 'AAPL';
+          
+        - fetch_financial_snapshot: Get the latest financial snapshot data
+          This returns the latest consolidated financial data as a JSON object
+        
+        Database schema:
+        - stocks (symbol TEXT, price NUMERIC, volume INTEGER, timestamp TIMESTAMP)
+        - financial_snapshot (id SERIAL, data JSONB, created_at TIMESTAMP)
+        - companies (ticker TEXT, name TEXT, sector TEXT, industry TEXT)
+        - financial_metrics (ticker TEXT, metric TEXT, value NUMERIC, period TEXT)
+        
+        Always verify the data available in the database before making claims.
+        When using the 'query' tool, make sure to write proper SQL queries.
+        Provide clear insights based on the data returned from the database.
+        
+        IMPORTANT: Remember to use async invocation for tools - do not use sync methods.
+        """)
         messages = [system_message] + messages
         logger.info(f"Prepared messages for model: {messages}")
         
         try:
-            # Create a proper LangGraph workflow
             logger.info("Setting up LangGraph workflow")
             workflow = StateGraph(MessagesState)
             
-            # Add nodes to the graph
+            # Add nodes - agent and the CORRECT ToolNode
             workflow.add_node("agent", call_model)
-            workflow.add_node("tools", tool_node)
-            
-            # Add the START edge to define the entry point
-            workflow.add_edge("__start__", "agent")
-            
-            # Add edges - create the conversational flow
-            # workflow.add_edge("agent", "tools")
+            workflow.add_node("tools", tool_node) # Use the globally updated tool_node
+            logger.info("Added agent and standard ToolNode to workflow")
+
+            workflow.add_edge(START, "agent")
             workflow.add_edge("tools", "agent")
-            
-            # Set conditional routing to determine if we execute tools or finish
             workflow.add_conditional_edges(
                 "agent",
                 should_continue,
-                {
-                    "tools": "tools",
-                    END: END
-                }
+                {"tools": "tools", END: END}
             )
             
-            # Compile the graph
             logger.info("Compiling LangGraph workflow")
             app = workflow.compile()
             
-            # Execute the full conversation
-            logger.info("Executing LangGraph conversation")
-            result = app.invoke({"messages": messages}, config={"max_iterations": 50})
+            logger.info("Executing LangGraph conversation asynchronously")
+            # CRITICAL: Use await app.ainvoke
+            result = await app.ainvoke({"messages": messages}, config={"max_iterations": 50}) 
             logger.info(f"LangGraph execution complete: {result}")
             
-            # Get the final message
             final_messages = result["messages"]
             logger.info(f"Final messages: {final_messages}")
             
-            # We need to find the most informative AI message with actual content
-            # Often after tool usage, earlier messages have more substance than the final pleasantries
             response_text = ""
             for msg in reversed(final_messages):
                 if isinstance(msg, AIMessage) and hasattr(msg, 'content') and msg.content:
-                    # Skip generic pleasantries like "If you have any other requests..."
                     if "If you have any other requests" not in msg.content and len(msg.content) > 30:
                         response_text = msg.content
                         logger.info(f"Found substantial response: {response_text[:100]}...")
                         break
-
-            # If we didn't find a substantial message, fall back to the last message
             if not response_text and final_messages:
                 last_message = final_messages[-1]
                 if hasattr(last_message, 'content') and last_message.content:
                     response_text = last_message.content
                 else:
                     response_text = str(last_message)
+            logger.info(f"Final response: {response_text}")
 
-            logger.info(f"Final response text extracted: {response_text}")
-            
         except Exception as model_error:
             logger.error(f"Error in LangGraph execution: {model_error}")
             logger.error(traceback.format_exc())
-            # Create a fallback response
             response_text = f"Error analyzing financial data: {str(model_error)}"
         
-        # Create agent message with the final response
         response_message = create_agent_message(response_text)
-        logger.info(f"Created agent message: {response_message}")
-        
-        # Create updated task with the response
-        logger.info("Creating updated task with response")
         updated_task = Task(
             id=task.id,
             sessionId=task.sessionId,
@@ -546,18 +357,13 @@ def process_financial_task(task: Task) -> Any:
             history=task.history + [response_message] if task.history else [response_message],
             metadata=task.metadata
         )
-        
         logger.info(f"Updated task created: {updated_task.id}, status: {updated_task.status.state}")
-        logger.debug(f"Full updated task: {updated_task}")
-        
         return updated_task
+
     except Exception as e:
-        logger.error(f"Error in process_financial_task: {e}")
+        logger.error(f"Error in process_financial_task_async: {e}")
         logger.error(traceback.format_exc())
-        # Create an error response
         error_message = create_agent_message(f"Error while processing financial task: {str(e)}")
-        logger.info(f"Created error message for response: {error_message}")
-        
         error_task = Task(
             id=task.id,
             sessionId=task.sessionId,
@@ -569,6 +375,14 @@ def process_financial_task(task: Task) -> Any:
             history=task.history + [error_message] if task.history else [error_message],
             metadata=task.metadata
         )
-        
         logger.info(f"Error task created: {error_task.id}, status: {error_task.status.state}")
-        return error_task 
+        return error_task
+
+# Synchronous wrapper remains the same
+def process_financial_task(task: Task) -> Any:
+    """Synchronous wrapper for process_financial_task_async."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(process_financial_task_async(task))
+    finally:
+        loop.close() 
