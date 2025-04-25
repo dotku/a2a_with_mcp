@@ -53,17 +53,32 @@ MCP_SERVER_CONFIG = {
     }
 }
 
-# Initialize MCP client and tools
+# Global variables for MCP state
 mcp_client = None
 tools = []
-
-# Initialize tool_node, it will be updated later
 tool_node = ToolNode([]) # Start with an empty list, will be updated
+mcp_initialized = False
+mcp_event_loop = None  # Store a reference to the event loop used for MCP
+
+# Create a global event loop for all MCP operations
+# This ensures we use the same event loop for all async operations
+def get_mcp_event_loop():
+    """Get or create the MCP event loop."""
+    global mcp_event_loop
+    if mcp_event_loop is None or mcp_event_loop.is_closed():
+        mcp_event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(mcp_event_loop)
+        logger.info("Created new MCP event loop")
+    return mcp_event_loop
 
 # Async function to initialize MCP client
 async def init_mcp_client():
     """Initialize the MCP client asynchronously."""
     global mcp_client, tools
+    
+    if mcp_client is not None:
+        logger.info("MCP client already initialized")
+        return tools
     
     try:
         logger.info("Initializing MCP client asynchronously...")
@@ -85,10 +100,26 @@ async def cleanup_mcp():
         try:
             await mcp_client.__aexit__(None, None, None)
             logger.info("MCP client shut down")
+            mcp_client = None
         except Exception as e:
             logger.error(f"Error shutting down MCP client: {e}")
 
-atexit.register(lambda: asyncio.create_task(cleanup_mcp()))
+# Safe synchronous cleanup function for atexit
+def sync_cleanup_mcp():
+    """Synchronous wrapper for cleanup to use with atexit."""
+    global mcp_client, mcp_event_loop
+    if mcp_client:
+        try:
+            # Use the existing MCP event loop or create a new one if it's closed
+            loop = get_mcp_event_loop()
+            if not loop.is_running():
+                loop.run_until_complete(cleanup_mcp())
+                logger.info("MCP client cleanup completed")
+        except Exception as e:
+            logger.error(f"Error in sync cleanup: {e}")
+
+# Register the sync version for atexit
+atexit.register(sync_cleanup_mcp)
 
 api_key = os.getenv("OPENAI_API_KEY")
 logger.info(f"API key available: {api_key is not None}")
@@ -106,8 +137,7 @@ else:
         logger.info(f"Fake mode returning database response: {response.content}")
         return response
 
-mcp_initialized = False
-
+# Ensure MCP client is initialized before processing tasks
 async def ensure_mcp_initialized():
     """Ensure MCP client is initialized before processing tasks."""
     global mcp_initialized, model_with_tools, tools, tool_node
@@ -226,7 +256,7 @@ def call_model(state: MessagesState):
             else:
                 # For the RunnableBinding version
                 logger.info("Using .invoke() method for model")
-                response = model_with_tools.invoke(messages) # Note: This might need to be async if model_with_tools is async
+                response = model_with_tools.invoke(messages)
             
             logger.info(f"Model response received: {response}")
             return {"messages": messages + [response]}
@@ -312,7 +342,7 @@ async def process_financial_task_async(task: Task) -> Any:
             
             logger.info("Executing LangGraph conversation asynchronously")
             # CRITICAL: Use await app.ainvoke
-            result = await app.ainvoke({"messages": messages}, config={"max_iterations": 50}) 
+            result = await app.ainvoke({"messages": messages}, config={"max_iterations": 10}) # Reduced iterations for faster response
             logger.info(f"LangGraph execution complete: {result}")
             
             final_messages = result["messages"]
@@ -378,11 +408,22 @@ async def process_financial_task_async(task: Task) -> Any:
         logger.info(f"Error task created: {error_task.id}, status: {error_task.status.state}")
         return error_task
 
-# Synchronous wrapper remains the same
+# Process a financial task using the shared MCP event loop
 def process_financial_task(task: Task) -> Any:
     """Synchronous wrapper for process_financial_task_async."""
-    loop = asyncio.new_event_loop()
+    # Get the shared MCP event loop instead of creating a new one
+    loop = get_mcp_event_loop()
+    
     try:
+        # Run the async function in the event loop
         return loop.run_until_complete(process_financial_task_async(task))
-    finally:
-        loop.close() 
+    except RuntimeError as e:
+        if "Event loop is closed" in str(e):
+            # If the loop was closed, try with a new one
+            logger.error("Event loop was closed, creating a new one")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(process_financial_task_async(task))
+        else:
+            # Re-raise other RuntimeErrors
+            raise 
