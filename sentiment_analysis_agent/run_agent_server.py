@@ -14,20 +14,33 @@ Environment Variables:
 import os
 import sys
 import subprocess
+from pathlib import Path
+from dotenv import load_dotenv
 
 if __name__ == "__main__":
+    # Load environment variables from .env file
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(base_dir)
+    
+    # Try to load .env from current directory, then parent directory
+    if os.path.exists(os.path.join(base_dir, '.env')):
+        load_dotenv(os.path.join(base_dir, '.env'))
+        print(f"Loaded environment from {os.path.join(base_dir, '.env')}")
+    elif os.path.exists(os.path.join(parent_dir, '.env')):
+        load_dotenv(os.path.join(parent_dir, '.env'))
+        print(f"Loaded environment from {os.path.join(parent_dir, '.env')}")
+    else:
+        print("No .env file found. Using existing environment variables.")
+    
     # Check if GOOGLE_API_KEY is set
     if not os.environ.get("GOOGLE_API_KEY"):
         print("Error: GOOGLE_API_KEY environment variable must be set.")
+        print("Please create a .env file with GOOGLE_API_KEY=your_api_key or set it in your environment.")
         sys.exit(1)
-    
-    # Get the absolute path to the sentiment analysis agent directory
-    base_dir = os.path.dirname(os.path.abspath(__file__))
     
     # Create a new environment with PYTHONPATH set to include our parent directory
     # This ensures modules are found correctly
     env = os.environ.copy()
-    parent_dir = os.path.dirname(base_dir)
     
     # If PYTHONPATH is already set, append to it; otherwise, create it
     if "PYTHONPATH" in env:
@@ -41,7 +54,7 @@ if __name__ == "__main__":
     # Define the command to run uvicorn directly
     cmd = [
         sys.executable, "-m", "uvicorn",
-        "sentiment_analysis_agent.agent_server:app",
+        "sentiment_analysis_agent.server:app",
         "--host", "0.0.0.0",
         "--port", port,
         "--log-level", "info"

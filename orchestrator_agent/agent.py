@@ -72,7 +72,7 @@ class OrchestratorAgent:
             # URLs for specialized agents - Update financial_data URL
             self.agent_urls = {
                 "financial_data": "http://localhost:8001", # Updated port
-                "sentiment_analysis": "http://localhost:8002",
+                "sentiment_analysis": "http://localhost:10000",
                 "competitor_analysis": "http://localhost:8003",
                 "visualization": "http://localhost:8004",
                 "prompt_templates": "http://localhost:8005"
@@ -243,31 +243,32 @@ class OrchestratorAgent:
                     "This agent breaks down complex tasks into smaller subtasks and delegates them "
                     "to specialized agents. It then aggregates the results and provides a final response."
                 ),
-                # Updated instruction to detail all financial agent tools
-                instruction="""
-                You are an orchestrator agent that helps perform market research and investment analysis.
-                
-                When you receive a request, break it down into specific subtasks and delegate them 
-                to the appropriate specialized agents:
-                
-                1. Financial Data Agent: For retrieving financial statements, stock price history, and running SQL queries on financial data.
-                2. Sentiment Analysis Agent: For analyzing news and social media sentiment
-                3. Competitor Analysis Agent: For analyzing competitor data and market positioning
-                4. Visualization Agent: For creating visual representations of data
-                5. Prompt Templates Agent: For providing standardized analysis templates
-                
-                After collecting information from these specialized agents, synthesize the results 
-                into a comprehensive response for the user.
-                
-                You can use the following tools to interact with specialized agents:
-                - fetch_financial_statements: To request financial statements (income, balance sheet, cash flow) for a company and year.
-                - fetch_stock_price_history: To request historical stock prices for a ticker symbol within an optional date range. Omit dates for current price.
-                - run_sql_query: To execute a read-only SQL query (SELECT or WITH) on the financial database.
-                - fetch_news_sentiment: To analyze news and social media sentiment.
-                - analyze_competitors: To gather competitor information.
-                - generate_visualization: To create visual representations.
-                - get_analysis_template: To obtain standardized analysis templates.
-                """,
+                # Updated instruction to detail all financial agent tools AND sentiment mapping
+                instruction=(
+                    "You are an orchestrator agent that helps perform market research and investment analysis.\n\n"
+                    "When you receive a request, break it down into specific subtasks and delegate them \n"
+                    "to the appropriate specialized agents:\n\n"
+                    "1. Financial Data Agent: For retrieving financial statements, stock price history, and running SQL queries on financial data.\n"
+                    "2. Sentiment Analysis Agent: For analyzing news and social media sentiment for specific cryptocurrencies. Use the mapping below for subreddits:\n"
+                    "    - Bitcoin (BTC): r/Bitcoin\n"
+                    "    - Ethereum (ETH): r/ethereum\n"
+                    "    - Ripple (XRP): r/XRP\n"
+                    "    - Solana (SOL): r/solana\n"
+                    "    - Dogecoin (DOGE): r/dogecoin\n"
+                    "3. Competitor Analysis Agent: For analyzing competitor data and market positioning\n"
+                    "4. Visualization Agent: For creating visual representations of data\n"
+                    "5. Prompt Templates Agent: For providing standardized analysis templates\n\n"
+                    "After collecting information from these specialized agents, synthesize the results \n"
+                    "into a comprehensive response for the user.\n\n"
+                    "You can use the following tools to interact with specialized agents:\n"
+                    "- fetch_financial_statements: To request financial statements (income, balance sheet, cash flow) for a company and year.\n"
+                    "- fetch_stock_price_history: To request historical stock prices for a ticker symbol within an optional date range. Omit dates for current price.\n"
+                    "- run_sql_query: To execute a read-only SQL query (SELECT or WITH) on the financial database.\n"
+                    "- fetch_news_sentiment: To analyze news and social media sentiment for a specific company/crypto and subreddit. Determine the correct subreddit using the mapping above. If the user asks for the 'latest' sentiment, use the default timeframe ('latest').\n"
+                    "- analyze_competitors: To gather competitor information.\n"
+                    "- generate_visualization: To create visual representations.\n"
+                    "- get_analysis_template: To obtain standardized analysis templates.\n"
+                ),
                 # Updated tools list
                 tools=[
                     self.fetch_financial_statements, # Renamed
@@ -318,35 +319,44 @@ class OrchestratorAgent:
                 send_response = response.json()
                 logger.info(f"Received task/send response from {agent_name.replace('_', ' ').title()} Agent: {send_response}")
 
-                # Check if the task was submitted successfully
-                if (
-                    "result" not in send_response 
-                    or not isinstance(send_response.get("result"), dict) 
-                    or "id" not in send_response["result"]
-                    or "status" not in send_response["result"]
-                    or not isinstance(send_response["result"].get("status"), dict)
-                    or send_response["result"]["status"].get("state") != "submitted"
-                ):
-                    # Handle potential immediate errors or unexpected format from tasks/send
-                    error_msg = "Failed to submit task or unexpected initial response"
+                # Check the result structure and initial task state
+                if "result" not in send_response or not isinstance(send_response.get("result"), dict):
+                    error_msg = "Invalid response format from agent"
                     if "error" in send_response and send_response.get("error"):
                          error_obj = send_response["error"]
                          error_msg = error_obj.get("message", str(error_obj)) if isinstance(error_obj, dict) else str(error_obj)
-                    elif "result" in send_response and isinstance(send_response.get("result"), dict) and "status" in send_response["result"]:
-                         # Maybe the task failed immediately?
-                         status = send_response["result"]["status"]
-                         if isinstance(status, dict) and status.get("state") == "failed" and status.get("message"):
-                              msg_parts = status["message"].get("parts", [])
-                              if msg_parts and isinstance(msg_parts[0], dict):
-                                   error_msg = msg_parts[0].get("text", "Task failed immediately")
-                         
+                    logger.error(f"{error_msg} from {agent_name.replace('_', ' ').title()} Agent. Response: {send_response}")
+                    return json.dumps({"error": error_msg})
+                
+                task_data = send_response["result"]
+                task_id = task_data.get("id", initial_task_id) # Use actual ID if provided
+                
+                if "status" not in task_data or not isinstance(task_data.get("status"), dict) or "state" not in task_data["status"]:
+                    error_msg = "Missing or invalid status in initial task response"
                     logger.error(f"{error_msg} from {agent_name.replace('_', ' ').title()} Agent. Response: {send_response}")
                     return json.dumps({"error": error_msg})
 
-                task_id = send_response["result"]["id"] # Get the actual task ID
-                logger.info(f"Task {task_id} submitted successfully. Starting polling.")
+                initial_state = task_data["status"]["state"]
                 
-                # Start polling for the result
+                # --- Handle immediate completion or failure ---
+                if initial_state == "completed":
+                    logger.info(f"Task {task_id} reported as COMPLETED in initial response. Extracting result.")
+                    return self._extract_result_from_task_data(task_data, task_id)
+                
+                elif initial_state == "failed":
+                    logger.error(f"Task {task_id} reported as FAILED in initial response.")
+                    error_message = self._extract_error_from_task_data(task_data)
+                    return json.dumps({"error": f"{agent_name.replace('_', ' ').title()} agent task failed: {error_message}"})
+                
+                elif initial_state not in ["submitted", "working"]:
+                     # If state is not submitted/working and also not completed/failed, it's unexpected
+                     error_msg = f"Task {task_id} started in unexpected state: {initial_state}"
+                     logger.error(f"{error_msg} from {agent_name.replace('_', ' ').title()} Agent. Response: {send_response}")
+                     return json.dumps({"error": error_msg})
+                 
+                # --- Proceed with polling only if state is submitted or working ---
+                logger.info(f"Task {task_id} state is {initial_state}. Starting polling.")
+                
                 start_time = time.time()
                 timeout_seconds = 60 # Adjust timeout as needed
                 poll_interval_seconds = 2 # Adjust interval as needed
@@ -368,87 +378,38 @@ class OrchestratorAgent:
                     logger.debug(f"Received task/get response: {get_response}")
 
                     if "result" in get_response and isinstance(get_response.get("result"), dict):
-                        task_data = get_response["result"]
-                        if "status" in task_data and isinstance(task_data.get("status"), dict):
-                            task_status = task_data["status"]["state"]
+                        polled_task_data = get_response["result"]
+                        if "status" in polled_task_data and isinstance(polled_task_data.get("status"), dict):
+                            task_status = polled_task_data["status"]["state"]
                             
                             if task_status == "completed":
-                                logger.info(f"Task {task_id} completed.")
-                                # Extract result from artifacts first
-                                if (
-                                     "artifacts" in task_data 
-                                     and isinstance(task_data.get("artifacts"), list) 
-                                     and task_data["artifacts"] # not empty
-                                     and isinstance(task_data["artifacts"][0], dict)
-                                     and "parts" in task_data["artifacts"][0]
-                                     and isinstance(task_data["artifacts"][0].get("parts"), list)
-                                     and task_data["artifacts"][0]["parts"] # not empty
-                                     and isinstance(task_data["artifacts"][0]["parts"][0], dict)
-                                     and "text" in task_data["artifacts"][0]["parts"][0]
-                                ):
-                                    result_text = task_data["artifacts"][0]["parts"][0]["text"]
-                                    logger.info(f"Extracted result from artifact: {result_text[:200]}...")
-                                    # Attempt to parse JSON, otherwise return text
-                                    try:
-                                        parsed_data = json.loads(result_text)
-                                        return json.dumps(parsed_data) # Return parsed JSON
-                                    except json.JSONDecodeError:
-                                        # Not JSON, return as text data
-                                        return json.dumps({"status": "success", "data": result_text})
-                                # Fallback: Extract result from status message if no artifacts
-                                elif (
-                                    "status" in task_data
-                                    and isinstance(task_data.get("status"), dict)
-                                    and "message" in task_data["status"]
-                                    and isinstance(task_data["status"].get("message"), dict)
-                                    and "parts" in task_data["status"]["message"]
-                                    and isinstance(task_data["status"]["message"].get("parts"), list)
-                                    and task_data["status"]["message"]["parts"] # not empty
-                                    and isinstance(task_data["status"]["message"]["parts"][0], dict)
-                                    and "text" in task_data["status"]["message"]["parts"][0]
-                                 ):
-                                    result_text = task_data["status"]["message"]["parts"][0]["text"]
-                                    logger.info(f"Extracted result from status message: {result_text[:200]}...")
-                                    return json.dumps({"status": "success", "data": result_text})
-                                else:
-                                    logger.warning(f"Task {task_id} completed but no result found in artifacts or status message.")
-                                    return json.dumps({"status": "completed_no_data", "message": "Task completed but no standard result data found."})
+                                logger.info(f"Polling found task {task_id} completed.")
+                                return self._extract_result_from_task_data(polled_task_data, task_id)
 
                             elif task_status == "failed":
-                                logger.error(f"Task {task_id} failed.")
-                                error_message = "Task failed for unknown reason."
-                                if (
-                                    "status" in task_data
-                                    and isinstance(task_data.get("status"), dict)
-                                    and "message" in task_data["status"]
-                                    and isinstance(task_data["status"].get("message"), dict)
-                                    and "parts" in task_data["status"]["message"]
-                                    and isinstance(task_data["status"]["message"].get("parts"), list)
-                                    and task_data["status"]["message"]["parts"] # not empty
-                                    and isinstance(task_data["status"]["message"]["parts"][0], dict)
-                                    and "text" in task_data["status"]["message"]["parts"][0]
-                                ):
-                                    error_message = task_data["status"]["message"]["parts"][0]["text"]
+                                logger.error(f"Polling found task {task_id} failed.")
+                                error_message = self._extract_error_from_task_data(polled_task_data)
                                 return json.dumps({"error": f"{agent_name.replace('_', ' ').title()} agent task failed: {error_message}"})
 
                             elif task_status in ["submitted", "working"]:
                                 logger.debug(f"Task {task_id} still in state: {task_status}. Continuing polling.")
                                 # Continue loop
                             else:
-                                logger.warning(f"Task {task_id} in unexpected state: {task_status}. Stopping poll.")
+                                logger.warning(f"Task {task_id} in unexpected state during poll: {task_status}. Stopping poll.")
                                 return json.dumps({"error": f"Task ended in unexpected state: {task_status}"})
                         else:
                              logger.warning(f"Polling response for task {task_id} missing status information: {get_response}")
-                             # Optionally wait and retry, or return error
+                             # Optionally wait and retry, or return error after a few attempts
+                             # For now, continue polling hoping the next response is valid
                     elif "error" in get_response and get_response["error"]:
-                        # Handle errors from the tasks/get call itself (e.g., task not found after initial send)
+                        # Handle errors from the tasks/get call itself (e.g., task not found)
                         error_obj = get_response["error"]
                         error_details = error_obj.get("message", str(error_obj)) if isinstance(error_obj, dict) else str(error_obj)
                         logger.error(f"Error polling task {task_id}: {error_details}")
                         return json.dumps({"error": f"Error retrieving task status: {error_details}"})
                     else:
                         logger.warning(f"Unexpected polling response format for task {task_id}: {get_response}")
-                        # Decide how to handle - maybe retry or return an error after a few attempts
+                        # Continue polling hoping the next response is valid
                 
                 # If the loop finishes without completion
                 logger.error(f"Polling timed out for task {task_id} after {timeout_seconds} seconds.")
@@ -464,6 +425,71 @@ class OrchestratorAgent:
             logger.error(f"Error in _call_specialized_agent ({agent_name}): {str(e)}")
             logger.error(traceback.format_exc())
             return json.dumps({"error": f"An unexpected error occurred while calling {agent_name}: {str(e)}"})
+
+    # --- Helper methods to extract data from task results ---
+    def _extract_result_from_task_data(self, task_data: Dict, task_id: str) -> str:
+        """Extracts the primary result text from completed task data."""
+        if (
+             "artifacts" in task_data 
+             and isinstance(task_data.get("artifacts"), list) 
+             and task_data["artifacts"] # not empty
+             and isinstance(task_data["artifacts"][0], dict)
+             and "parts" in task_data["artifacts"][0]
+             and isinstance(task_data["artifacts"][0].get("parts"), list)
+             and task_data["artifacts"][0]["parts"] # not empty
+             and isinstance(task_data["artifacts"][0]["parts"][0], dict)
+             and "text" in task_data["artifacts"][0]["parts"][0]
+        ):
+            result_text = task_data["artifacts"][0]["parts"][0]["text"]
+            logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:200]}...")
+            # Attempt to parse JSON, otherwise return text
+            try:
+                # Important: Ensure the specialized agent actually returns JSON if needed.
+                # If it's just text, this parse will fail, and we'll wrap it.
+                parsed_data = json.loads(result_text)
+                # Return the already-JSON string if it parsed successfully
+                return result_text 
+            except json.JSONDecodeError:
+                # Not JSON, return as text data wrapped in a success JSON structure
+                return json.dumps({"status": "success", "data": result_text})
+                
+        # Fallback: Extract result from status message if no artifacts (less common)
+        elif (
+            "status" in task_data
+            and isinstance(task_data.get("status"), dict)
+            and "message" in task_data["status"]
+            and isinstance(task_data["status"].get("message"), dict)
+            and "parts" in task_data["status"]["message"]
+            and isinstance(task_data["status"]["message"].get("parts"), list)
+            and task_data["status"]["message"]["parts"] # not empty
+            and isinstance(task_data["status"]["message"]["parts"][0], dict)
+            and "text" in task_data["status"]["message"]["parts"][0]
+         ):
+            result_text = task_data["status"]["message"]["parts"][0]["text"]
+            logger.info(f"Extracted result from status message for task {task_id}: {result_text[:200]}...")
+            # Assume status message text is not meant to be JSON, wrap it
+            return json.dumps({"status": "success", "data": result_text})
+        else:
+            logger.warning(f"Task {task_id} completed but no result found in artifacts or status message.")
+            return json.dumps({"status": "completed_no_data", "message": "Task completed but no standard result data found."})
+
+    def _extract_error_from_task_data(self, task_data: Dict) -> str:
+        """Extracts the error message from failed task data."""
+        error_message = "Task failed for unknown reason."
+        if (
+            "status" in task_data
+            and isinstance(task_data.get("status"), dict)
+            and "message" in task_data["status"]
+            and isinstance(task_data["status"].get("message"), dict)
+            and "parts" in task_data["status"]["message"]
+            and isinstance(task_data["status"]["message"].get("parts"), list)
+            and task_data["status"]["message"]["parts"] # not empty
+            and isinstance(task_data["status"]["message"]["parts"][0], dict)
+            and "text" in task_data["status"]["message"]["parts"][0]
+        ):
+            error_message = task_data["status"]["message"]["parts"][0]["text"]
+        return error_message
+    # --- End Helper methods ---
 
     # Tool implementations
     # Renamed from fetch_financial_data
@@ -522,32 +548,29 @@ class OrchestratorAgent:
         query_text = f"Run SQL query: {query}"
         return self._call_specialized_agent("financial_data", query_text, tool_context)
 
-    def fetch_news_sentiment(self, company: str, timeframe: str, tool_context: ToolContext) -> str:
+    # Updated fetch_news_sentiment with subreddit parameter
+    def fetch_news_sentiment(self, company: str, subreddit: str, tool_context: ToolContext, timeframe: Optional[str] = "latest") -> str:
         """
-        Fetch news and social media sentiment for a specific company.
-        
+        Fetch news and social media sentiment for a specific company/crypto from a specified subreddit using the Sentiment Analysis Agent.
+
         Args:
-            company: The company ticker symbol or identifier
-            timeframe: Time period for sentiment analysis (e.g., 'last_week', 'last_month')
-            
+            company: The company/crypto ticker symbol or identifier (e.g., 'AAPL', 'GOOG', 'BTC').
+            subreddit: The target subreddit name (e.g., 'Bitcoin', 'ethereum').
+            tool_context: The context provided by the ADK framework.
+            timeframe: Optional. Time period for sentiment analysis (e.g., 'last_week', 'last_month'). Defaults to 'latest'.
+
         Returns:
-            Sentiment analysis results
+            Sentiment analysis results as a JSON string.
         """
-        try:
-            # In a real implementation, this would make an A2A call to the Sentiment Analysis Agent
-            # For demonstration, we'll return mock data
-            return json.dumps({
-                "company": company,
-                "timeframe": timeframe,
-                "status": "Sentiment analysis completed",
-                "sentiment": {
-                    "positive": 65,
-                    "neutral": 25,
-                    "negative": 10
-                }
-            })
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        # Construct the query based on the timeframe and subreddit
+        if timeframe == "latest":
+            query_text = f"Get latest sentiment for {company} from subreddit {subreddit}"
+        else:
+            query_text = f"Get sentiment for {company} from subreddit {subreddit} over the {timeframe}"
+            
+        logger.info(f"Calling sentiment agent with query: {query_text}")
+        # Call the specialized agent instead of returning mock data
+        return self._call_specialized_agent("sentiment_analysis", query_text, tool_context)
 
     def analyze_competitors(self, company: str, metrics: List[str], tool_context: ToolContext) -> str:
         """
@@ -614,8 +637,8 @@ class OrchestratorAgent:
             # In a real implementation, this would make an A2A call to the Prompt Templates Agent
             # For demonstration, we'll return mock data
             templates = {
-                "market_analysis": "# Market Analysis Template\n1. Industry Overview\n2. Market Size and Growth\n3. Key Trends\n4. Competitive Landscape\n5. Future Outlook",
-                "investment_thesis": "# Investment Thesis Template\n1. Company Overview\n2. Financials\n3. Competitive Position\n4. Growth Drivers\n5. Risks and Mitigations\n6. Valuation and Recommendation"
+                "market_analysis": "# Market Analysis Template\\n1. Industry Overview\\n2. Market Size and Growth\\n3. Key Trends\\n4. Competitive Landscape\\n5. Future Outlook",
+                "investment_thesis": "# Investment Thesis Template\\n1. Company Overview\\n2. Financials\\n3. Competitive Position\\n4. Growth Drivers\\n5. Risks and Mitigations\\n6. Valuation and Recommendation"
             }
             return json.dumps({
                 "template_type": template_type,

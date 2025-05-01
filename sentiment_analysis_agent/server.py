@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Launcher script for the sentiment analysis agent server.
-This makes it easier to start the agent server from the command line.
+Server for the sentiment analysis agent.
+Implements the A2A protocol to allow communication with other agents.
 
 Usage:
   python server.py
@@ -14,15 +14,49 @@ Environment Variables:
 import os
 import sys
 import logging
+import json
+import traceback
 import uvicorn
-from fastapi import FastAPI, APIRouter, Request
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 # Set up absolute imports for the project
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-# Direct import of the agent class using absolute path to avoid package conflicts
-from crewai.agent import SentimentAnalysisAgent
+# Import A2A types from common
+from sentiment_analysis_agent.common.types import (
+    JSONRPCRequest,
+    JSONRPCResponse,
+    JSONRPCError,
+    A2ARequest,
+    SendTaskRequest,
+    SendTaskResponse,
+    GetTaskRequest,
+    GetTaskResponse,
+    CancelTaskRequest,
+    CancelTaskResponse,
+    SetTaskPushNotificationRequest,
+    SetTaskPushNotificationResponse,
+    GetTaskPushNotificationRequest,
+    GetTaskPushNotificationResponse,
+    JSONParseError,
+    InvalidRequestError,
+    MethodNotFoundError,
+    InvalidParamsError,
+    InternalError,
+    TaskNotFoundError,
+    UnsupportedOperationError,
+    TaskNotCancelableError,
+    AgentCard,
+    AgentProvider,
+    AgentCapabilities,
+    AgentAuthentication,
+    AgentSkill,
+)
+
+# Import the task manager
+from .task_manager import SentimentTaskManager
 
 # Configure logging
 logging.basicConfig(
@@ -35,57 +69,218 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app and router
-app = FastAPI()
-router = APIRouter()
-app.include_router(router)
+# Create FastAPI app
+app = FastAPI(title="Sentiment Analysis Agent")
 
-# Initialize the sentiment analysis agent
-sentiment_agent = SentimentAnalysisAgent()
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@router.post("/invoke")
-async def invoke_agent(request: Request):
-    """Invoke the sentiment analysis agent with the given query."""
+# Create the TaskManager
+task_manager = SentimentTaskManager()
+
+# Define the AgentCard for this service
+agent_card = AgentCard(
+    name="Bitcoin Sentiment Analyst",
+    description="Analyzes Reddit data to determine Bitcoin sentiment",
+    url="https://sentiment-agent.example.com",
+    provider=AgentProvider(
+        organization="CrewAI",
+        url="https://crewai.example.com"
+    ),
+    version="1.0.0",
+    documentationUrl="https://sentiment-agent.example.com/docs",
+    capabilities=AgentCapabilities(
+        streaming=False,
+        pushNotifications=False,
+        stateTransitionHistory=True
+    ),
+    authentication=AgentAuthentication(
+        schemes=["none"]
+    ),
+    defaultInputModes=["text"],
+    defaultOutputModes=["text"],
+    skills=[
+        AgentSkill(
+            id="sentiment-analysis",
+            name="Bitcoin Sentiment Analysis",
+            description="Analyze sentiment about Bitcoin from Reddit data",
+            tags=["crypto", "sentiment", "bitcoin", "reddit"],
+            examples=[
+                "What's the current sentiment about Bitcoin on Reddit?",
+                "Is the market bullish or bearish on Bitcoin right now?"
+            ]
+        )
+    ]
+)
+
+@app.get("/.well-known/agent.json")
+async def get_agent_json():
+    """
+    Return the AgentCard for this service in the agent.json format.
+    This is the A2A specification filename.
+    """
+    logger.info("Serving agent.json")
+    return agent_card.model_dump(exclude_none=True)
+
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    """
+    logger.info("Health check request received")
+    return {"status": "ok"}
+
+async def handle_json_rpc_request(request: Request) -> JSONRPCResponse:
+    """
+    Handle a JSON-RPC request.
+    
+    Args:
+        request: FastAPI Request object
+        
+    Returns:
+        JSONRPCResponse
+    """
     try:
         # Parse the request body
-        data = await request.json()
-        query = data.get("query", "")
-        session_id = data.get("session_id", "default_session")
+        body = await request.json()
+        logger.info(f"Received JSON-RPC request: {body}")
         
-        logger.info(f"Received request to invoke agent with query: {query}, session_id: {session_id}")
-        
-        # Call the synchronous agent
-        response = sentiment_agent.invoke(query, session_id)
-        
-        # Extract the raw string response from CrewOutput
-        if hasattr(response, 'raw'):
-            response_text = response.raw
-        else:
-            response_text = str(response)
+        # Validate the JSON-RPC request
+        try:
+            rpc_request = A2ARequest.validate_python(body)
+            logger.info(f"Validated as {type(rpc_request).__name__}")
             
-        logger.info(f"Agent response (first 100 chars): {response_text[:100] if response_text else 'None'}")
+        except Exception as e:
+            logger.error(f"Invalid JSON-RPC request: {e}")
+            return JSONRPCResponse(
+                id=body.get("id"),
+                error=InvalidRequestError(data=str(e))
+            )
         
-        return {"response": response_text}
+        # Process the request based on the method
+        if isinstance(rpc_request, SendTaskRequest):
+            # Handle tasks/send method
+            logger.info(f"Processing tasks/send for task ID: {rpc_request.params.id}")
+            try:
+                task = await task_manager.send_task(rpc_request.params)
+                logger.info(f"Task created: {task.id}, status: {task.status.state}")
+                response = SendTaskResponse(id=rpc_request.id, result=task)
+                logger.debug(f"Sending response: {response}")
+                return response
+            except Exception as e:
+                logger.error(f"Error processing send task request: {e}")
+                logger.error(traceback.format_exc())
+                return JSONRPCResponse(
+                    id=rpc_request.id,
+                    error=InternalError(data=str(e))
+                )
+                
+        elif isinstance(rpc_request, GetTaskRequest):
+            # Handle tasks/get method
+            logger.info(f"Processing tasks/get for task ID: {rpc_request.params.id}")
+            task = await task_manager.get_task(rpc_request.params)
+            if task is None:
+                logger.warning(f"Task not found: {rpc_request.params.id}")
+                return JSONRPCResponse(
+                    id=rpc_request.id,
+                    error=TaskNotFoundError()
+                )
+            logger.info(f"Returning task: {task.id}, status: {task.status.state}")
+            return GetTaskResponse(id=rpc_request.id, result=task)
+            
+        elif isinstance(rpc_request, CancelTaskRequest):
+            # Handle tasks/cancel method
+            logger.info(f"Processing tasks/cancel for task ID: {rpc_request.params.id}")
+            try:
+                task = await task_manager.cancel_task(rpc_request.params)
+                if task is None:
+                    logger.warning(f"Task not found for cancellation: {rpc_request.params.id}")
+                    return JSONRPCResponse(
+                        id=rpc_request.id,
+                        error=TaskNotFoundError()
+                    )
+                logger.info(f"Canceled task: {task.id}, status: {task.status.state}")
+                return CancelTaskResponse(id=rpc_request.id, result=task)
+            except TaskNotCancelableError:
+                logger.warning(f"Task not cancelable: {rpc_request.params.id}")
+                return JSONRPCResponse(
+                    id=rpc_request.id,
+                    error=TaskNotCancelableError()
+                )
+            
+        elif isinstance(rpc_request, SetTaskPushNotificationRequest):
+            # Handle tasks/pushNotification/set method
+            logger.info(f"Processing pushNotification/set for task ID: {rpc_request.params.id}")
+            try:
+                result = await task_manager.set_push_notification(rpc_request.params)
+                logger.info(f"Push notification set for task: {result.id}")
+                return SetTaskPushNotificationResponse(id=rpc_request.id, result=result)
+            except UnsupportedOperationError:
+                return JSONRPCResponse(
+                    id=rpc_request.id,
+                    error=UnsupportedOperationError("Push notifications are not supported")
+                )
+            
+        elif isinstance(rpc_request, GetTaskPushNotificationRequest):
+            # Handle tasks/pushNotification/get method
+            logger.info(f"Processing pushNotification/get for task ID: {rpc_request.params.id}")
+            try:
+                result = await task_manager.get_push_notification(rpc_request.params)
+                if result is None:
+                    logger.warning(f"Push notification not found for task: {rpc_request.params.id}")
+                    return JSONRPCResponse(
+                        id=rpc_request.id,
+                        error=TaskNotFoundError()
+                    )
+                logger.info(f"Returning push notification for task: {result.id}")
+                return GetTaskPushNotificationResponse(id=rpc_request.id, result=result)
+            except UnsupportedOperationError:
+                return JSONRPCResponse(
+                    id=rpc_request.id,
+                    error=UnsupportedOperationError("Push notifications are not supported")
+                )
+            
+        else:
+            # Unsupported method
+            logger.warning(f"Unsupported method: {rpc_request.method}")
+            return JSONRPCResponse(
+                id=rpc_request.id,
+                error=MethodNotFoundError()
+            )
+            
+    except json.JSONDecodeError:
+        # Invalid JSON
+        logger.error("Invalid JSON in request")
+        return JSONRPCResponse(
+            id=None,
+            error=JSONParseError()
+        )
+        
     except Exception as e:
-        logger.exception(f"Error invoking agent: {e}")
-        return {"error": str(e)}
+        # Unexpected error
+        logger.error(f"Unexpected error: {e}")
+        logger.error(traceback.format_exc())
+        return JSONRPCResponse(
+            id=None,
+            error=InternalError(data=str(e))
+        )
 
-@router.get("/info")
-async def agent_info():
-    """Return information about this agent for the UI to display."""
-    return {
-        "name": "Bitcoin Sentiment Analyst",
-        "description": "Analyzes Reddit data to determine Bitcoin sentiment",
-        "capabilities": {
-            "streaming": False,
-            "pushNotifications": False
-        },
-        "defaultInputModes": ["text"],
-        "defaultOutputModes": ["text"],
-        "provider": {
-            "organization": "CrewAI"
-        }
-    }
+@app.post("/")
+async def json_rpc_endpoint(request: Request) -> JSONRPCResponse:
+    """
+    Main JSON-RPC endpoint for A2A requests.
+    """
+    logger.info(f"Incoming request from {request.client.host}")
+    response = await handle_json_rpc_request(request)
+    logger.info(f"Sending response for request ID: {response.id}")
+    logger.debug(f"Response content: {response.model_dump_json()}")
+    return response
 
 if __name__ == "__main__":
     # Check if GOOGLE_API_KEY is set

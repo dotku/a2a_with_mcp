@@ -7,7 +7,6 @@ name = "a2a-python-example-ui"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "a2a-samples" },
     { name = "asyncio" },
     { name = "fastapi" },
     { name = "google-adk" },
@@ -27,7 +26,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-samples", editable = "../../samples/python" },
     { name = "asyncio", specifier = ">=3.4.3" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-adk", specifier = ">=0.0.3" },
@@ -42,42 +40,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.11.2" }]
-
-[[package]]
-name = "a2a-samples"
-version = "0.1.0"
-source = { editable = "../../samples/python" }
-dependencies = [
-    { name = "httpx" },
-    { name = "httpx-sse" },
-    { name = "jwcrypto" },
-    { name = "pydantic" },
-    { name = "pyjwt" },
-    { name = "sse-starlette" },
-    { name = "starlette" },
-    { name = "typing-extensions" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "httpx-sse", specifier = ">=0.4.0" },
-    { name = "jwcrypto", specifier = ">=1.5.6" },
-    { name = "pydantic", specifier = ">=2.10.6" },
-    { name = "pyjwt", specifier = ">=2.10.1" },
-    { name = "sse-starlette", specifier = ">=2.2.1" },
-    { name = "starlette", specifier = ">=0.46.1" },
-    { name = "typing-extensions", specifier = ">=4.12.2" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-mock", specifier = ">=3.14.0" },
-    { name = "ruff", specifier = ">=0.11.2" },
-]
 
 [[package]]
 name = "absl-py"
@@ -792,19 +754,6 @@ wheels = [
 ]
 
 [[package]]
-name = "jwcrypto"
-version = "1.5.6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cryptography" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/db/870e5d5fb311b0bcf049630b5ba3abca2d339fd5e13ba175b4c13b456d08/jwcrypto-1.5.6.tar.gz", hash = "sha256:771a87762a0c081ae6166958a954f80848820b2ab066937dc8b8379d65b1b039", size = 87168 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cd/58/4a1880ea64032185e9ae9f63940c9327c6952d5584ea544a8f66972f2fda/jwcrypto-1.5.6-py3-none-any.whl", hash = "sha256:150d2b0ebbdb8f40b77f543fb44ffd2baeff48788be71f67f03566692fd55789", size = 92520 },
-]
-
-[[package]]
 name = "markupsafe"
 version = "3.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1142,15 +1091,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/88/82/c79424d7d8c29b994fb01d277da57b0a9b09cc03c3ff875f9bd8a86b2145/pydantic_settings-2.8.1.tar.gz", hash = "sha256:d5c663dfbe9db9d5e1c646b2e161da12f0d734d422ee56f567d0ea2cee4e8585", size = 83550 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/53/a64f03044927dc47aafe029c42a5b7aabc38dfb813475e0e1bf71c4a59d0/pydantic_settings-2.8.1-py3-none-any.whl", hash = "sha256:81942d5ac3d905f7f3ee1a70df5dfb62d5569c12f51a5a647defc1c3d9ee2e9c", size = 30839 },
-]
-
-[[package]]
-name = "pyjwt"
-version = "2.10.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e7/46/bd74733ff231675599650d3e47f361794b22ef3e3770998dda30d3b63726/pyjwt-2.10.1.tar.gz", hash = "sha256:3cc5772eb20009233caf06e9d8a0577824723b44e6648ee0a2aedb6cf9381953", size = 87785 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/ad/689f02752eeec26aed679477e80e632ef1b682313be70793d798c1d5fc8f/PyJWT-2.10.1-py3-none-any.whl", hash = "sha256:dcdd193e30abefd5debf142f9adfcdd2b58004e644f25406ffaebd50bd98dacb", size = 22997 },
 ]
 
 [[package]]

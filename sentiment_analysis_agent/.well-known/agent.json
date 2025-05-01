@@ -1,0 +1,33 @@
+{
+  "name": "Bitcoin Sentiment Analyst",
+  "description": "Analyzes Reddit data to determine Bitcoin sentiment",
+  "url": "https://sentiment-agent.example.com",
+  "provider": {
+    "organization": "CrewAI",
+    "url": "https://crewai.example.com"
+  },
+  "version": "1.0.0",
+  "documentationUrl": "https://sentiment-agent.example.com/docs",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "authentication": {
+    "schemes": ["none"]
+  },
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text"],
+  "skills": [
+    {
+      "id": "sentiment-analysis",
+      "name": "Bitcoin Sentiment Analysis",
+      "description": "Analyze sentiment about Bitcoin from Reddit data",
+      "tags": ["crypto", "sentiment", "bitcoin", "reddit"],
+      "examples": [
+        "What's the current sentiment about Bitcoin on Reddit?",
+        "Is the market bullish or bearish on Bitcoin right now?"
+      ]
+    }
+  ]
+} 

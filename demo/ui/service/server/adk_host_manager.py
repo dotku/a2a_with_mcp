@@ -265,6 +265,9 @@ class ADKHostManager(ApplicationManager):
           role="agent",
           metadata=metadata,
       )
+    elif task is None:
+      # Skip emitting events for None tasks
+      return
     elif task.status and task.status.message:
       content = task.status.message
     elif task.artifacts:
@@ -278,7 +281,7 @@ class ADKHostManager(ApplicationManager):
       )
     else:
       content = Message(
-          parts=[TextPart(text=str(task.status.state))],
+          parts=[TextPart(text=str(task.status.state if task.status else "UNKNOWN"))],
           role="agent",
           metadata=metadata,
       )

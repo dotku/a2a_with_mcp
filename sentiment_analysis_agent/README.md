@@ -1,6 +1,13 @@
 # Bitcoin Sentiment Analysis Agent
 
-This agent analyzes sentiment for Bitcoin discussions on Reddit using the CrewAI framework.
+This agent analyzes sentiment for Bitcoin discussions on Reddit using the CrewAI framework. It implements the Agent-to-Agent (A2A) protocol for interoperability with other A2A-compliant agents and orchestrators.
+
+## Features
+
+- Bitcoin sentiment analysis from Reddit data
+- Full A2A protocol compatibility for agent discovery and task management
+- Integration with the A2A UI framework
+- Synchronous processing (non-streaming)
 
 ## Setup and Running
 
@@ -9,74 +16,122 @@ This agent analyzes sentiment for Bitcoin discussions on Reddit using the CrewAI
 Make sure you have all required dependencies installed:
 
 ```bash
-pip install crewai fastapi uvicorn httpx
+pip install crewai fastapi uvicorn httpx pydantic python-dotenv
 ```
 
 ### 2. Set Environment Variables
 
-Set your Google API key:
+You can set environment variables in two ways:
+
+#### Option 1: Using a .env file (recommended)
+
+Create a `.env` file in either the root directory or inside the `sentiment_analysis_agent` directory:
+
+```
+# .env file
+GOOGLE_API_KEY=your_google_api_key_here
+SENTIMENT_AGENT_PORT=10000  # Optional, defaults to 10000
+```
+
+The server will automatically load variables from this file when starting.
+
+#### Option 2: Set environment variables directly
 
 ```bash
 export GOOGLE_API_KEY=your_api_key_here
+export SENTIMENT_AGENT_PORT=10000  # Optional
 ```
 
 ### 3. Start the Sentiment Analysis Agent Server
 
-Run the agent server using the launcher script that handles import paths correctly:
+Run the agent server using one of the launcher scripts:
 
 ```bash
 cd ~/Desktop/A2A_with_MCP
 python -m sentiment_analysis_agent.run_agent_server
 ```
 
-The agent server will start on port 10000 by default. You can change this by setting the `SENTIMENT_AGENT_PORT` environment variable.
-
-### 4. Start the UI
-
-Run the UI application:
+Or alternatively:
 
 ```bash
-cd ~/Desktop/A2A_with_MCP/demo/ui
-uv run main.py
+cd ~/Desktop/A2A_with_MCP
+python -m sentiment_analysis_agent.start_agent_server
 ```
 
-The UI server will start on port 12000 by default.
+The agent server will start on port 10000 by default. You can change this by setting the `SENTIMENT_AGENT_PORT` environment variable either in your .env file or directly in your environment.
 
-### 5. Register the Agent in the UI
+### 4. Connect to the Agent
 
-1. Open your browser and navigate to `http://localhost:12000`
+#### Using the A2A UI
+
+1. Start the UI application
 2. Go to the "Remote Agents" page
-3. Click the "+" button to add a new agent
-4. Enter `localhost:10000` as the agent address
-5. Click "Read" to read the agent information
-6. Click "Save" to register the agent
+3. Add the agent with address `localhost:10000`
+4. The UI will automatically detect the agent's capabilities via `/.well-known/agent.json`
 
-### 6. Use the Agent
+#### Using the Orchestrator Agent
 
-1. Return to the main page
-2. Start a new conversation
-3. Select the "Bitcoin Sentiment Analyst" agent
-4. Ask questions like "What's the current sentiment about Bitcoin on Reddit?"
+The agent can be used with the orchestrator agent, which will discover it through the standard A2A protocol endpoint at `/.well-known/agent.json`.
+
+#### Direct API Interaction
+
+You can interact with the agent directly using the A2A JSON-RPC protocol. Example request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req-1",
+  "method": "tasks/send",
+  "params": {
+    "id": "task-1",
+    "sessionId": "session-1",
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "What's the current sentiment about Bitcoin on Reddit?"
+        }
+      ]
+    }
+  }
+}
+```
+
+## A2A Protocol Implementation
+
+This agent implements the standard A2A protocol with the following endpoints:
+
+- `/.well-known/agent.json` - Agent discovery metadata
+- `/` - Main JSON-RPC endpoint for all A2A operations
+- `/health` - Health check endpoint
+
+Supported A2A methods:
+- `tasks/send` - Send a task to the agent
+- `tasks/get` - Get the current state of a task
+- `tasks/cancel` - Cancel a running task
 
 ## Troubleshooting
 
 If you encounter any issues:
 
-1. **Import Errors**: The project uses a directory named `crewai` which may conflict with the installed `crewai` package. Always use the `run_agent_server.py` script to start the server to avoid import conflicts.
+1. **Check Logs**: Review the agent server logs in `sentiment_agent_server.log` and `sentiment_task_manager.log`
 
-2. **Check Logs**: Review the agent server logs in `sentiment_agent_server.log`
+2. **API Key**: Verify your GOOGLE_API_KEY is correctly set in your environment or .env file
 
-3. **API Key**: Verify your GOOGLE_API_KEY is correctly set and valid
-
-4. **Connectivity**: Ensure network connectivity between the UI and agent servers
+3. **A2A Compatibility**: Use tools like `curl` to verify the agent card is accessible:
+   ```
+   curl http://localhost:10000/.well-known/agent.json
+   ```
 
 ## Architecture
 
 This project consists of:
 
 1. **Sentiment Analysis Agent**: A CrewAI agent that analyzes Bitcoin sentiment from Reddit
-2. **MCP Server for Reddit**: A server that provides access to Reddit data
-3. **UI Integration**: Integration with the A2A UI framework for easy interaction
+2. **A2A Task Manager**: Manages A2A task lifecycle and interfaces with the agent
+3. **A2A Server**: Implements the A2A protocol endpoints
+4. **MCP Server for Reddit**: A server that provides access to Reddit data
 
 The flow is:
-User → UI → Agent Server → MCP Server → Reddit API → Analysis → Response 
+A2A Request → Server → Task Manager → Agent → MCP Server → Reddit API → Analysis → A2A Response 
