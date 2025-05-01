@@ -24,9 +24,10 @@ from common.types import (
 # Remove this import and use the one from task_manager
 # from common.utils.push_notification_auth import PushNotificationSenderAuth
 
-from agent import process_request
-from task_manager import OrchestratorTaskManager, PushNotificationSenderAuth
-from mcp_server import mcp  # Import mcp from mcp_server.py instead of agent.py
+# Use relative imports for modules within the same package
+from .agent import process_request
+from .task_manager import OrchestratorTaskManager, PushNotificationSenderAuth
+from .mcp_server import mcp  # Import mcp from mcp_server.py instead of agent.py
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -130,8 +131,8 @@ async def agent_manifest():
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Agent manifest not found")
 
-if __name__ == "__main__":
-    logger.info(f"Starting server on {host}:{port}")
-    
-    # Run the server
-    uvicorn.run(app, host=host, port=port) 
+# Removed the if __name__ == "__main__" block as startup is now handled by __main__.py
+# logger.info(f"Starting server on {host}:{port}")
+# 
+# # Run the server
+# uvicorn.run(app, host=host, port=port) 
