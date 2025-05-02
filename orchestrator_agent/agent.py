@@ -237,7 +237,7 @@ class OrchestratorAgent:
         """Builds the LLM agent for the orchestrator."""
         try:
             return LlmAgent(
-                model="gemini-2.0-flash-001",
+                model="gemini-2.0-flash-lite",
                 name="orchestrator_agent",
                 description=(
                     "This agent breaks down complex tasks into smaller subtasks and delegates them "
