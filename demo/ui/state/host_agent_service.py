@@ -28,7 +28,7 @@ from .state import (
 )
 import asyncio
 import threading
-from common.types import Artifact, Message, Task, Part
+from common.types import Artifact, Message, Task, Part, TextPart
 
 server_url = "http://localhost:12000"
 
@@ -178,7 +178,26 @@ def convert_conversation_to_state(conversation: Conversation) -> StateConversati
   )
 
 def convert_task_to_state(task: Task) -> StateTask:
-  # Get the first message as the description
+  # Check if history is None or empty before trying to access it
+  if not task.history:
+    # Create a default message if history is missing
+    default_message = Message(
+        role="agent",
+        parts=[TextPart(type="text", text=f"Task {task.id} (no history available)")]
+    )
+    
+    # Use artifacts if available, otherwise empty list
+    output = [extract_content(a.parts) for a in task.artifacts] if task.artifacts else []
+    
+    return StateTask(
+        task_id=task.id,
+        session_id=task.sessionId,
+        state=str(task.status.state),
+        message=convert_message_to_state(default_message),
+        artifacts=output,
+    )
+  
+  # Normal case when history is available
   message = task.history[0]
   last_message = task.history[-1]
   output = [extract_content(a.parts) for a in task.artifacts] if task.artifacts else []

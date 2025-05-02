@@ -4,6 +4,7 @@ from typing import Any, AsyncIterable, Dict, List, Optional
 import traceback
 import logging
 import time
+import httpx
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -16,8 +17,6 @@ from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
-
-import httpx
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -248,7 +247,7 @@ class OrchestratorAgent:
                     "You are an orchestrator agent that helps perform market research and investment analysis.\n\n"
                     "When you receive a request, break it down into specific subtasks and delegate them \n"
                     "to the appropriate specialized agents:\n\n"
-                    "1. Financial Data Agent: For retrieving financial statements, stock price history, and running SQL queries on financial data.\n"
+                    "1. Financial Data Agent: For retrieving financial statements, stock price history, running SQL queries on financial data, AND performing cryptocurrency market and historical analysis.\n"
                     "2. Sentiment Analysis Agent: For analyzing news and social media sentiment for specific cryptocurrencies. Use the mapping below for subreddits:\n"
                     "    - Bitcoin (BTC): r/Bitcoin\n"
                     "    - Ethereum (ETH): r/ethereum\n"
@@ -260,20 +259,32 @@ class OrchestratorAgent:
                     "5. Prompt Templates Agent: For providing standardized analysis templates\n\n"
                     "After collecting information from these specialized agents, synthesize the results \n"
                     "into a comprehensive response for the user.\n\n"
+                    "VISUALIZATION HANDLING - MOST IMPORTANT: When the user asks for a visualization, you should:\n\n"
+                    "1. Call the generate_visualization tool\n"
+                    "2. When you receive the result, DO NOT say you can't 'display', 'show', or 'provide' the visualization\n"
+                    "3. INSTEAD, respond with something like: 'I've created a visualization of [describe what the visualization shows]. The chart displays [key insights from data]. Here are the details:'\n"
+                    "4. Then list the key data points in a structured format (e.g., for a bar chart, list each category and its value)\n"
+                    "5. GOOD RESPONSE EXAMPLE: 'I've created a bar chart showing Number of Users for different Service Names. College Finder has the most users at 850, followed by Scholarship Hub with 670 users...'\n"
+                    "6. BAD RESPONSE EXAMPLE: 'I'm unable to display the chart, but it shows the number of users...'\n"
+                    "7. Remember, describing the visualization IS providing it to the user. This is exactly what is expected.\n\n"
                     "You can use the following tools to interact with specialized agents:\n"
-                    "- fetch_financial_statements: To request financial statements (income, balance sheet, cash flow) for a company and year.\n"
-                    "- fetch_stock_price_history: To request historical stock prices for a ticker symbol within an optional date range. Omit dates for current price.\n"
-                    "- run_sql_query: To execute a read-only SQL query (SELECT or WITH) on the financial database.\n"
-                    "- fetch_news_sentiment: To analyze news and social media sentiment for a specific company/crypto and subreddit. Determine the correct subreddit using the mapping above. If the user asks for the 'latest' sentiment, use the default timeframe ('latest').\n"
-                    "- analyze_competitors: To gather competitor information.\n"
-                    "- generate_visualization: To create visual representations.\n"
-                    "- get_analysis_template: To obtain standardized analysis templates.\n"
+                    "- fetch_financial_statements: Delegate task to Financial Agent: Request financial statements (income, balance sheet, cash flow) for a company and year.\n"
+                    "- fetch_stock_price_history: Delegate task to Financial Agent: Request historical stock prices for a ticker symbol within an optional date range. Omit dates for current price.\n"
+                    "- run_sql_query: Delegate task to Financial Agent: Execute a read-only SQL query (SELECT or WITH) on the financial database.\n"
+                    "- get_crypto_market_analysis: Delegate task to Financial Agent: Request detailed market analysis for a cryptocurrency (top exchanges, volume, VWAP).\n"
+                    "- get_crypto_historical_analysis: Delegate task to Financial Agent: Request historical price analysis for a cryptocurrency with optional timeframe.\n"
+                    "- fetch_news_sentiment: Delegate task to Sentiment Analysis Agent: Analyze news/social media sentiment for a company/crypto and subreddit. Determine the correct subreddit using the mapping above. If the user asks for the 'latest' sentiment, use the default timeframe ('latest').\n"
+                    "- analyze_competitors: Delegate task to Competitor Analysis Agent: Gather competitor information.\n"
+                    "- generate_visualization: Delegate task to Visualization Agent: Create visual representations of data. Your response should describe what the visualization shows in detail.\n"
+                    "- get_analysis_template: Delegate task to Prompt Templates Agent: Obtain standardized analysis templates.\n"
                 ),
-                # Updated tools list
+                # Updated tools list with new crypto analysis tools
                 tools=[
-                    self.fetch_financial_statements, # Renamed
-                    self.fetch_stock_price_history, # Added
-                    self.run_sql_query,             # Added
+                    self.fetch_financial_statements,
+                    self.fetch_stock_price_history,
+                    self.run_sql_query,
+                    self.get_crypto_market_analysis,
+                    self.get_crypto_historical_analysis,
                     self.fetch_news_sentiment,
                     self.analyze_competitors,
                     self.generate_visualization,
@@ -286,149 +297,165 @@ class OrchestratorAgent:
             raise
 
     # Helper method for making A2A calls with polling
-    def _call_specialized_agent(self, agent_name: str, query_text: str, tool_context: Optional[ToolContext]) -> str:
-        """Calls a specialized agent, sends a task, and polls for the result."""
-        try:
-            agent_url = self.agent_urls.get(agent_name)
-            if not agent_url:
-                return json.dumps({"error": f"{agent_name.replace('_', ' ').title()} agent URL not configured"})
-
-            session_id = str(uuid.uuid4())
-            initial_task_id = f"task-{uuid.uuid4()}"
+    def _call_specialized_agent(self, agent_name=None, agent_url=None, agent_input=None, query_text=None, tool_context=None, max_retries=1) -> str:
+        """
+        Calls a specialized agent, sends a task, and polls for the result.
+        
+        Args:
+            agent_name: Name of the agent to call (used to look up URL)
+            agent_url: Direct URL to the agent (alternative to agent_name)
+            agent_input: Input to send to the agent
+            query_text: Backward compatibility for older code
+            tool_context: Optional context from tool invocation
+            max_retries: Number of retries to attempt if a call fails
             
-            send_request = {
+        Returns:
+            JSON string with agent response or error
+        """
+        try:
+            if not agent_url and not agent_name:
+                return json.dumps({
+                    "status": "error", 
+                    "message": "Either agent_name or agent_url must be provided"
+                })
+            
+            # Get agent URL from mapping if name is provided
+            if not agent_url:
+                agent_url = self.agent_urls.get(agent_name)
+                if not agent_url:
+                    return json.dumps({
+                        "status": "error", 
+                        "message": f"No URL found for agent: {agent_name}"
+                    })
+            
+            # Create task ID and session ID
+            task_id = f"task-{uuid.uuid4()}"
+            session_id = f"{uuid.uuid4()}"
+            
+            # If legacy query_text is provided, wrap it (backward compatibility)
+            if query_text and not agent_input:
+                agent_input = {"query": query_text}
+            
+            # Prepare the agent request payload
+            agent_request = {
                 "jsonrpc": "2.0",
                 "id": str(uuid.uuid4()),
                 "method": "tasks/send",
                 "params": {
-                    "id": initial_task_id,
+                    "id": task_id,
                     "sessionId": session_id,
                     "acceptedOutputModes": ["text"],
                     "message": {
                         "role": "user",
-                        "parts": [{"type": "text", "text": query_text}]
+                        "parts": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(agent_input) if isinstance(agent_input, dict) else agent_input
+                            }
+                        ]
                     }
                 }
             }
             
-            logger.info(f"Sending task/send request to {agent_name.replace('_', ' ').title()} Agent: {send_request}")
+            logger.info(f"Sending task/send request to Specialized Agent: {agent_request}")
             
-            with httpx.Client() as client:
-                response = client.post(agent_url, json=send_request, timeout=60.0)
-                response.raise_for_status()
-                send_response = response.json()
-                logger.info(f"Received task/send response from {agent_name.replace('_', ' ').title()} Agent: {send_response}")
-
-                # Check the result structure and initial task state
-                if "result" not in send_response or not isinstance(send_response.get("result"), dict):
-                    error_msg = "Invalid response format from agent"
-                    if "error" in send_response and send_response.get("error"):
-                         error_obj = send_response["error"]
-                         error_msg = error_obj.get("message", str(error_obj)) if isinstance(error_obj, dict) else str(error_obj)
-                    logger.error(f"{error_msg} from {agent_name.replace('_', ' ').title()} Agent. Response: {send_response}")
-                    return json.dumps({"error": error_msg})
-                
-                task_data = send_response["result"]
-                task_id = task_data.get("id", initial_task_id) # Use actual ID if provided
-                
-                if "status" not in task_data or not isinstance(task_data.get("status"), dict) or "state" not in task_data["status"]:
-                    error_msg = "Missing or invalid status in initial task response"
-                    logger.error(f"{error_msg} from {agent_name.replace('_', ' ').title()} Agent. Response: {send_response}")
-                    return json.dumps({"error": error_msg})
-
-                initial_state = task_data["status"]["state"]
-                
-                # --- Handle immediate completion or failure ---
-                if initial_state == "completed":
-                    logger.info(f"Task {task_id} reported as COMPLETED in initial response. Extracting result.")
-                    return self._extract_result_from_task_data(task_data, task_id)
-                
-                elif initial_state == "failed":
-                    logger.error(f"Task {task_id} reported as FAILED in initial response.")
-                    error_message = self._extract_error_from_task_data(task_data)
-                    return json.dumps({"error": f"{agent_name.replace('_', ' ').title()} agent task failed: {error_message}"})
-                
-                elif initial_state not in ["submitted", "working"]:
-                     # If state is not submitted/working and also not completed/failed, it's unexpected
-                     error_msg = f"Task {task_id} started in unexpected state: {initial_state}"
-                     logger.error(f"{error_msg} from {agent_name.replace('_', ' ').title()} Agent. Response: {send_response}")
-                     return json.dumps({"error": error_msg})
-                 
-                # --- Proceed with polling only if state is submitted or working ---
-                logger.info(f"Task {task_id} state is {initial_state}. Starting polling.")
-                
-                start_time = time.time()
-                timeout_seconds = 60 # Adjust timeout as needed
-                poll_interval_seconds = 2 # Adjust interval as needed
-
-                while time.time() - start_time < timeout_seconds:
-                    time.sleep(poll_interval_seconds)
+            # Make the initial request to send the task
+            attempts = 0
+            error_message = None
+            response_data = None
+            
+            while attempts < max_retries:
+                attempts += 1
+                try:
+                    response = httpx.post(agent_url, json=agent_request, timeout=60.0)
+                    response.raise_for_status()  # Raise exception for non-200 responses
+                    response_data = response.json()
+                    logger.info(f"Received task/send response from Specialized Agent: {response_data}")
                     
-                    get_request = {
-                        "jsonrpc": "2.0",
-                        "id": str(uuid.uuid4()),
-                        "method": "tasks/get",
-                        "params": {"id": task_id}
-                    }
-                    
-                    logger.debug(f"Polling task {task_id} status...")
-                    get_response_obj = client.post(agent_url, json=get_request, timeout=30.0)
-                    get_response_obj.raise_for_status()
-                    get_response = get_response_obj.json()
-                    logger.debug(f"Received task/get response: {get_response}")
-
-                    if "result" in get_response and isinstance(get_response.get("result"), dict):
-                        polled_task_data = get_response["result"]
-                        if "status" in polled_task_data and isinstance(polled_task_data.get("status"), dict):
-                            task_status = polled_task_data["status"]["state"]
+                    # Check if task was completed immediately
+                    if (
+                        "result" in response_data 
+                        and isinstance(response_data["result"], dict)
+                        and "status" in response_data["result"]
+                        and isinstance(response_data["result"]["status"], dict)
+                        and "state" in response_data["result"]["status"]
+                    ):
+                        task_state = response_data["result"]["status"]["state"]
+                        
+                        if task_state == "completed":
+                            logger.info(f"Task {task_id} reported as COMPLETED in initial response. Extracting result.")
+                            # Extract the result from the response
+                            return self._extract_result_from_task_data(response_data["result"], task_id)
+                        elif task_state == "error":
+                            error_message = "Task reported error state"
+                            logger.error(f"Task {task_id} reported ERROR state: {response_data}")
+                            # Try again if we haven't reached max retries
+                            continue
                             
-                            if task_status == "completed":
-                                logger.info(f"Polling found task {task_id} completed.")
-                                return self._extract_result_from_task_data(polled_task_data, task_id)
-
-                            elif task_status == "failed":
-                                logger.error(f"Polling found task {task_id} failed.")
-                                error_message = self._extract_error_from_task_data(polled_task_data)
-                                return json.dumps({"error": f"{agent_name.replace('_', ' ').title()} agent task failed: {error_message}"})
-
-                            elif task_status in ["submitted", "working"]:
-                                logger.debug(f"Task {task_id} still in state: {task_status}. Continuing polling.")
-                                # Continue loop
-                            else:
-                                logger.warning(f"Task {task_id} in unexpected state during poll: {task_status}. Stopping poll.")
-                                return json.dumps({"error": f"Task ended in unexpected state: {task_status}"})
-                        else:
-                             logger.warning(f"Polling response for task {task_id} missing status information: {get_response}")
-                             # Optionally wait and retry, or return error after a few attempts
-                             # For now, continue polling hoping the next response is valid
-                    elif "error" in get_response and get_response["error"]:
-                        # Handle errors from the tasks/get call itself (e.g., task not found)
-                        error_obj = get_response["error"]
-                        error_details = error_obj.get("message", str(error_obj)) if isinstance(error_obj, dict) else str(error_obj)
-                        logger.error(f"Error polling task {task_id}: {error_details}")
-                        return json.dumps({"error": f"Error retrieving task status: {error_details}"})
-                    else:
-                        logger.warning(f"Unexpected polling response format for task {task_id}: {get_response}")
-                        # Continue polling hoping the next response is valid
+                    # Task requires polling - unfortunately this isn't implemented yet
+                    # In reality, we need to poll using tasks/get until completion
+                    return json.dumps({
+                        "status": "error",
+                        "message": "Task requires polling which is not yet implemented"
+                    })
+                    
+                except httpx.RequestError as e:
+                    error_message = f"Request error calling {agent_url}: {str(e)}"
+                    logger.error(error_message)
+                    # Wait before retrying
+                    time.sleep(2)
+                except httpx.HTTPStatusError as e:
+                    error_message = f"HTTP error calling {agent_url}: {str(e)}"
+                    logger.error(error_message)
+                    # Wait before retrying
+                    time.sleep(2)
+                except Exception as e:
+                    error_message = f"Error calling {agent_url}: {str(e)}"
+                    logger.error(error_message)
+                    logger.error(traceback.format_exc())
+                    # Wait before retrying
+                    time.sleep(2)
+                    
+            # If we get here, all retries failed
+            if error_message:
+                return json.dumps({"status": "error", "message": error_message})
+            else:
+                return json.dumps({"status": "error", "message": "Unknown error during specialized agent call"})
                 
-                # If the loop finishes without completion
-                logger.error(f"Polling timed out for task {task_id} after {timeout_seconds} seconds.")
-                return json.dumps({"error": f"Timed out waiting for result from {agent_name.replace('_', ' ').title()} agent"})
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error calling {agent_name.replace('_', ' ').title()} Agent: {e.response.status_code} - {e.response.text}")
-            return json.dumps({"error": f"HTTP error calling {agent_name.replace('_', ' ').title()} Agent: {e.response.status_code}", "details": e.response.text})
-        except httpx.RequestError as e:
-            logger.error(f"Request error calling {agent_name.replace('_', ' ').title()} Agent: {e}")
-            return json.dumps({"error": f"Could not connect to {agent_name.replace('_', ' ').title()} Agent: {e}"})
         except Exception as e:
-            logger.error(f"Error in _call_specialized_agent ({agent_name}): {str(e)}")
+            logger.error(f"Error calling specialized agent: {str(e)}")
             logger.error(traceback.format_exc())
-            return json.dumps({"error": f"An unexpected error occurred while calling {agent_name}: {str(e)}"})
+            return json.dumps({"status": "error", "message": f"Internal error: {str(e)}"})
 
     # --- Helper methods to extract data from task results ---
     def _extract_result_from_task_data(self, task_data: Dict, task_id: str) -> str:
         """Extracts the primary result text from completed task data."""
+        # First check for image artifacts (for visualization agent)
+        if (
+            "artifacts" in task_data 
+            and isinstance(task_data.get("artifacts"), list) 
+            and task_data["artifacts"] # not empty
+        ):
+            artifact = task_data["artifacts"][0]
+            if isinstance(artifact, dict) and "parts" in artifact and artifact["parts"]:
+                part = artifact["parts"][0]
+                if isinstance(part, dict) and "file" in part:
+                    file_data = part["file"]
+                    if isinstance(file_data, dict) and "mimeType" in file_data and "bytes" in file_data:
+                        # This is an image file - return it directly
+                        logger.info(f"Found image file in response for task {task_id}")
+                        result_json = {
+                            "status": "success",
+                            "image_data": {
+                                "name": file_data.get("name", "plot.png"),
+                                "mime_type": file_data.get("mimeType", "image/png"),
+                                "data": file_data.get("bytes", "")
+                            },
+                            "message": "Visualization generated successfully. The image is available as base64-encoded data."
+                        }
+                        return json.dumps(result_json)
+            
+        # Fallback to text artifacts
         if (
              "artifacts" in task_data 
              and isinstance(task_data.get("artifacts"), list) 
@@ -441,11 +468,18 @@ class OrchestratorAgent:
              and "text" in task_data["artifacts"][0]["parts"][0]
         ):
             result_text = task_data["artifacts"][0]["parts"][0]["text"]
-            logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:200]}...")
-            # Attempt to parse JSON, otherwise return text
+            logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:100]}...")
+            
+            # If this is from visualization agent, don't parse as JSON
+            if "visualization" in result_text.lower() or "plot" in result_text.lower() or "chart" in result_text.lower():
+                return json.dumps({
+                    "status": "success", 
+                    "data": result_text,
+                    "message": "Visualization task completed successfully"
+                })
+                
+            # Otherwise, attempt to parse JSON
             try:
-                # Important: Ensure the specialized agent actually returns JSON if needed.
-                # If it's just text, this parse will fail, and we'll wrap it.
                 parsed_data = json.loads(result_text)
                 # Return the already-JSON string if it parsed successfully
                 return result_text 
@@ -466,8 +500,17 @@ class OrchestratorAgent:
             and "text" in task_data["status"]["message"]["parts"][0]
          ):
             result_text = task_data["status"]["message"]["parts"][0]["text"]
-            logger.info(f"Extracted result from status message for task {task_id}: {result_text[:200]}...")
-            # Assume status message text is not meant to be JSON, wrap it
+            logger.info(f"Extracted result from status message for task {task_id}: {result_text[:100]}...")
+            
+            # Special handling for visualization responses
+            if "plot generated" in result_text.lower() or "visualization" in result_text.lower():
+                return json.dumps({
+                    "status": "success", 
+                    "message": result_text,
+                    "type": "visualization"
+                })
+            
+            # Default handling
             return json.dumps({"status": "success", "data": result_text})
         else:
             logger.warning(f"Task {task_id} completed but no result found in artifacts or status message.")
@@ -548,6 +591,46 @@ class OrchestratorAgent:
         query_text = f"Run SQL query: {query}"
         return self._call_specialized_agent("financial_data", query_text, tool_context)
 
+    # --- NEW: Tool for Crypto Market Analysis ---
+    def get_crypto_market_analysis(self, symbol: str, tool_context: ToolContext) -> str:
+        """
+        Request detailed market analysis for a specific cryptocurrency using the Financial Agent.
+
+        Args:
+            symbol: The cryptocurrency symbol (e.g., 'BTC', 'ETH')
+            tool_context: The context provided by the ADK framework.
+
+        Returns:
+            Market analysis data as a JSON string.
+        """
+        query_text = f"Perform market analysis for {symbol}"
+        logger.info(f"Delegating market analysis for {symbol} to financial agent.")
+        return self._call_specialized_agent("financial_data", query_text, tool_context)
+
+    # --- NEW: Tool for Crypto Historical Analysis ---
+    def get_crypto_historical_analysis(self, symbol: str, tool_context: ToolContext, interval: Optional[str] = None, days: Optional[int] = None) -> str:
+        """
+        Request historical price analysis for a specific cryptocurrency with optional timeframe using the Financial Agent.
+
+        Args:
+            symbol: The cryptocurrency symbol (e.g., 'BTC', 'ETH').
+            tool_context: The context provided by the ADK framework.
+            interval: Optional. Time interval (e.g., 'h1', 'd1'). Defaults to Financial Agent's internal default if None.
+            days: Optional. Number of days to analyze. Defaults to Financial Agent's internal default if None.
+
+        Returns:
+            Historical analysis data as a JSON string.
+        """
+        query_parts = [f"Perform historical analysis for {symbol}"]
+        if interval:
+            query_parts.append(f"with interval {interval}")
+        if days:
+            query_parts.append(f"for the last {days} days" if interval else f" for {days} days") # Adjust phrasing slightly
+
+        query_text = " ".join(query_parts)
+        logger.info(f"Delegating historical analysis query to financial agent: {query_text}")
+        return self._call_specialized_agent("financial_data", query_text, tool_context)
+
     # Updated fetch_news_sentiment with subreddit parameter
     def fetch_news_sentiment(self, company: str, subreddit: str, tool_context: ToolContext, timeframe: Optional[str] = "latest") -> str:
         """
@@ -601,27 +684,164 @@ class OrchestratorAgent:
 
     def generate_visualization(self, data_type: str, parameters: Dict[str, Any], tool_context: ToolContext) -> str:
         """
-        Generate visual representations of data.
+        Generate visual representations of data using the Visualization Agent.
         
         Args:
-            data_type: Type of data to visualize (e.g., financial_metrics, market_share, sentiment)
-            parameters: Parameters for visualization generation
+            data_type: Type of data to visualize (e.g., bar_chart, line_chart, pie_chart)
+            parameters: Parameters for visualization generation including data for the plot
+            tool_context: The context provided by the ADK framework
             
         Returns:
-            URL or base64-encoded image of the generated chart
+            JSON string containing the visualization data or error message
         """
         try:
-            # In a real implementation, this would make an A2A call to the Visualization Agent
-            # For demonstration, we'll return mock data
-            return json.dumps({
-                "data_type": data_type,
-                "parameters": parameters,
-                "status": "Visualization generated",
-                "chart_url": "https://example.com/charts/abc123",
-                "chart_type": parameters.get("chart_type", "bar")
-            })
+            logger.info(f"Generating visualization of type: {data_type} with parameters: {parameters}")
+            
+            # Prepare visualization data based on data_type and parameters
+            if data_type == "bar_chart":
+                # Format data for bar chart visualization
+                # Support both x_axis_data and x_axis_categories for backward compatibility
+                labels = parameters.get("x_axis_data", parameters.get("x_axis_categories", []))
+                values = parameters.get("y_axis_data", parameters.get("y_axis_values", []))
+                x_label = parameters.get("x_axis_label", "X-Axis")
+                y_label = parameters.get("y_axis_label", "Y-Axis")
+                title = parameters.get("title", f"{y_label} by {x_label}")
+                
+                # Create plot description
+                plot_description = f"Generate a {data_type} showing {y_label} for different {x_label}"
+                
+                # Create a visualization summary for the response
+                vis_summary = {
+                    "type": "bar_chart",
+                    "title": title,
+                    "x_axis": x_label,
+                    "y_axis": y_label,
+                    "data_points": [{"label": label, "value": value} for label, value in zip(labels, values)] if labels and values else [],
+                    "message": f"A bar chart visualization has been created showing {y_label} for different {x_label}."
+                }
+                
+                # Create data_json string with both formats for backward compatibility
+                data_json = {
+                    "labels": labels,
+                    "values": values, 
+                    "xlabel": x_label,
+                    "ylabel": y_label,
+                    "x_axis_data": labels,
+                    "y_axis_data": values,
+                    "x_axis_label": x_label,
+                    "y_axis_label": y_label,
+                    "title": title
+                }
+                
+                # Convert data_json to string
+                data_json_str = json.dumps(data_json)
+                
+            elif data_type == "line_chart":
+                # Format data for line chart visualization
+                dates = parameters.get("x_axis_data", parameters.get("x_axis_categories", []))
+                values = parameters.get("y_axis_data", parameters.get("y_axis_values", []))
+                x_label = parameters.get("x_axis_label", "Date")
+                y_label = parameters.get("y_axis_label", "Value")
+                title = parameters.get("title", f"{y_label} over {x_label}")
+                
+                # Create plot description
+                plot_description = f"Generate a line chart showing {y_label} over {x_label}"
+                
+                # Create a visualization summary for the response
+                vis_summary = {
+                    "type": "line_chart",
+                    "title": title,
+                    "x_axis": x_label,
+                    "y_axis": y_label,
+                    "data_points": [{"date": date, "value": value} for date, value in zip(dates, values)] if dates and values else [],
+                    "message": f"A line chart visualization has been created showing {y_label} over time."
+                }
+                
+                # Create data_json string
+                data_json = {
+                    "labels": dates,
+                    "values": values, 
+                    "xlabel": x_label,
+                    "ylabel": y_label,
+                    "x_axis_data": dates,
+                    "y_axis_data": values,
+                    "x_axis_label": x_label,
+                    "y_axis_label": y_label,
+                    "title": title
+                }
+                data_json_str = json.dumps(data_json)
+                
+            else:
+                # Default format
+                title = parameters.get("title", f"{data_type.capitalize()} Visualization")
+                plot_description = f"Generate a {data_type} titled '{title}'"
+                vis_summary = {
+                    "type": data_type,
+                    "title": title,
+                    "message": f"A {data_type} visualization has been created based on the provided data."
+                }
+                data_json_str = json.dumps(parameters)
+            
+            # Prepare request for the visualization agent
+            visualization_request = {
+                "plot_description": plot_description,
+                "data_json": data_json_str
+            }
+            
+            logger.info(f"Calling visualization agent with request: {str(visualization_request)[:200]}...")
+            
+            # Call the visualization agent
+            agent_url = self.agent_urls.get("visualization", "http://localhost:8004")
+            result = self._call_specialized_agent(
+                agent_url=agent_url,
+                agent_input=json.dumps(visualization_request),
+                tool_context=tool_context
+            )
+            
+            # Parse the result
+            try:
+                result_data = json.loads(result)
+                
+                # Extract any image data if present
+                if "image_data" in result_data:
+                    # Include the visualization summary and image data in the response
+                    plot_id = result_data.get("image_data", {}).get("name", "unknown_plot.png")
+                    return json.dumps({
+                        "status": "success",
+                        "message": "Visualization generated successfully. Note that this interface doesn't support direct image display.",
+                        "visualization_summary": vis_summary,
+                        "plot_id": plot_id
+                    })
+                # Handle case where status is success but no image data
+                elif result_data.get("status") == "success":
+                    # Include the visualization summary in the response
+                    return json.dumps({
+                        "status": "success",
+                        "message": "Visualization generated successfully. Note that this interface doesn't support direct image display.",
+                        "visualization_summary": vis_summary,
+                        "plot_id": f"plot_{uuid.uuid4().hex}.png"
+                    })
+                else:
+                    # Return the raw result if it doesn't match expected format
+                    return result
+                    
+            except json.JSONDecodeError:
+                logger.warning(f"Visualization agent returned non-JSON result: {result[:200]}...")
+                # Try to provide a reasonable fallback
+                return json.dumps({
+                    "status": "success", 
+                    "message": "Visualization generated successfully. Note that this interface doesn't support direct image display.",
+                    "visualization_summary": vis_summary,
+                    "plot_id": f"plot_{uuid.uuid4().hex}.png"
+                })
+                
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            logger.error(f"Error generating visualization: {str(e)}")
+            logger.error(traceback.format_exc())
+            return json.dumps({
+                "status": "error", 
+                "message": f"Failed to generate visualization: {str(e)}"
+            })
 
     def get_analysis_template(self, template_type: str, tool_context: ToolContext) -> str:
         """

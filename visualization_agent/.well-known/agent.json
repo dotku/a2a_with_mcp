@@ -1,0 +1,62 @@
+{
+  "id": "visualization-agent-v1",
+  "name": "Data Visualization Agent",
+  "description": "Generates plots and charts from data based on descriptions.",
+  "version": "1.0.0",
+  "url": "http://localhost:8004",
+  "author": "AI Assistant",
+  "capabilities": {
+    "requestOutputModes": ["text", "artifact"],
+    "requestInputModes": ["text"],
+    "supportedContentTypes": ["text/plain", "image/png"],
+    "methods": ["tasks/send", "tasks/get"],
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "metadata": {
+    "multiClientSupport": true,
+    "maxConcurrentRequests": 10,
+    "preprocessingEnabled": true
+  },
+  "documentation": {
+    "usage": "Send JSON-RPC requests with plot_description and data_json parameters to generate visualizations",
+    "examples": [
+      {
+        "description": "Bar chart example",
+        "request": {
+          "jsonrpc": "2.0",
+          "id": "example1",
+          "method": "tasks/send",
+          "params": {
+            "id": "task-123",
+            "sessionId": "session-456",
+            "message": {
+              "role": "user",
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "{\"plot_description\": \"A bar chart of user counts by service\", \"data_json\": \"{\\\"labels\\\": [\\\"Service A\\\", \\\"Service B\\\"], \\\"values\\\": [100, 200]}\"}"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameterDescriptions": {
+      "plot_description": "Natural language description of the visualization to generate",
+      "data_json": "JSON string containing the data to visualize with keys like 'labels', 'values', etc."
+    }
+  },
+  "skills": [
+    {
+      "id": "data-visualization",
+      "name": "Data Visualization",
+      "description": "Creates visual representations of data as charts and plots",
+      "tags": ["visualization", "charts", "plots", "data"],
+      "inputModes": ["text"],
+      "outputModes": ["artifact"]
+    }
+  ]
+} 

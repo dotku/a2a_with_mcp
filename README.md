@@ -1,23 +1,71 @@
-# Financial Agent with PostgreSQL MCP Integration
+# Multi-Agent Market Research & Financial Analysis System
 
-A powerful financial analysis agent built with LangGraph that connects to PostgreSQL databases using the Model Context Protocol (MCP).
+This project demonstrates a sophisticated multi-agent system designed for market research and financial analysis. It combines the power of large language models (LLMs), specialized agents, and external data sources via the Model Context Protocol (MCP).
 
 ## Overview
 
-This project implements a financial analysis agent that:
-
-- Processes natural language queries about financial data
-- Connects to PostgreSQL databases using MCP for data access
-- Uses LangGraph for orchestrating AI conversation flows with tool use
-- Returns formatted financial insights based on live database data
+The system features an **Orchestrator Agent** that receives user requests and delegates subtasks to specialized agents. The key specialized agent is the **Financial Analysis Agent**, which has been enhanced to connect to multiple data sources.
 
 ## Architecture
 
-The system consists of:
+1.  **User Interface (UI):** (Assumed) Interacts with the Orchestrator Agent.
+2.  **Orchestrator Agent (`orchestrator_agent`):**
+    *   Built with Google ADK.
+    *   Receives user requests.
+    *   Uses an LLM (Gemini Flash) to determine the required subtasks.
+    *   Delegates tasks to specialized agents via A2A calls using specific tools.
+    *   Synthesizes results from specialized agents into a final response.
+3.  **Specialized Agents:**
+    *   **Financial Analysis Agent (`financial_agent_langgraph`):**
+        *   Built with LangGraph.
+        *   Connects to a **Postgres MCP server** for internal database queries (current prices, company info).
+        *   Connects to the **`mcp-crypto-price` MCP server** (Node.js) for external crypto market/historical analysis.
+        *   Exposes its capabilities via an A2A-compliant FastAPI server.
+    *   **Sentiment Analysis Agent (`sentiment_analysis_agent`):**
+        *   Built with CrewAI (in this example).
+        *   Connects to an **MCP Reddit server** to fetch posts.
+        *   Analyzes sentiment related to specific companies/cryptocurrencies.
+        *   Exposes its capabilities via an A2A-compliant FastAPI server.
+    *   **Other Agents (Competitor Analysis, Visualization, Templates):**
+        *   Placeholder agents demonstrating potential extensions (currently return mock data in the orchestrator).
+4.  **MCP Servers:**
+    *   **Postgres MCP Server:** (Assumed `MCP-servers/postgres_mcp.py`) Provides tools to interact with a financial PostgreSQL database.
+    *   **Crypto Price MCP Server:** (`mcp-crypto-price` Node.js package) Provides tools (`get-market-analysis`, `get-historical-analysis`) using the CoinCap API.
+    *   **Reddit MCP Server:** (Located within `sentiment_analysis_agent`) Provides tools to fetch Reddit data.
 
-1. **Financial Agent**: A LangGraph-based agent that processes financial queries using LLMs
-2. **MCP Postgres Server**: A Model Context Protocol server that exposes PostgreSQL tools to the LLM
-3. **Database Integration**: Connection to a PostgreSQL database with financial data
+## Key Features & Concepts
+
+- **Multi-Agent Collaboration:** Demonstrates how an orchestrator can manage and leverage multiple specialized agents.
+- **A2A Protocol:** Uses a standardized protocol for inter-agent communication (JSON-RPC based).
+- **Model Context Protocol (MCP):** Enables agents (like the Financial Agent) to securely and reliably use external tools and data sources (Postgres DB, CoinCap API via `mcp-crypto-price`, Reddit API) served via MCP.
+- **Multi-Backend MCP:** The Financial Agent showcases connecting to multiple, different MCP servers simultaneously.
+- **LangGraph & CrewAI:** Utilizes different frameworks for building the core logic of specialized agents.
+
+## Running the System
+
+1.  **Prerequisites:** Python 3.10+, Node.js/npx, PostgreSQL database, API Keys (OpenAI, CoinCap, potentially Reddit/PRAW).
+2.  **Setup:**
+    *   Clone the repository.
+    *   Install Python dependencies (`pip install -r requirements.txt` - ensure a consolidated requirements file exists or install per-agent).
+    *   Set required environment variables (see individual agent READMEs).
+    *   Ensure MCP server scripts/packages are accessible (`MCP-servers/postgres_mcp.py`, `mcp-crypto-price` via npx).
+3.  **Launch Agents (in separate terminals):**
+    *   `python -m financial_agent_langgraph` (Handles its MCP servers internally)
+    *   `uvicorn sentiment_analysis_agent.agent_server:app --reload --port 10000` (Or however the sentiment agent is run)
+    *   `python -m orchestrator_agent`
+    *   (Launch other specialized agents if implemented).
+4.  **Interact:** Use the UI or send requests directly to the Orchestrator Agent (default port 8000).
+
+## Project Structure
+
+- `orchestrator_agent/`: Code for the central orchestrator.
+- `financial_agent_langgraph/`: Code for the LangGraph-based financial agent.
+- `sentiment_analysis_agent/`: Code for the CrewAI-based sentiment agent.
+- `MCP-servers/`: (Example location) Contains MCP server implementations (e.g., `postgres_mcp.py`).
+- `README.md`: This file.
+- (Potentially `requirements.txt`, `.env.example`, etc.)
+
+*(See individual agent directories for their specific README files)*
 
 ## Requirements
 

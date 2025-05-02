@@ -15,6 +15,7 @@ from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
 import atexit
 from langchain_mcp_adapters.client import MultiServerMCPClient
+import json
 
 # Load environment variables before importing any models
 load_dotenv()
@@ -44,21 +45,31 @@ try:
 except Exception as e:
     logger.error(f"Failed to set up file logging: {e}")
 
-# Configure the Postgres MCP server
+# Configure MCP servers
 MCP_SERVER_CONFIG = {
     "postgres": {
         "command": "python3",
         "args": ["MCP-servers/postgres_mcp.py"],
         "transport": "stdio",
+        "env": {}
+    },
+    "crypto": {
+        "command": "npx",
+        "args": ["mcp-crypto-price"],
+        "transport": "stdio",
+        "env": {
+            "COINCAP_API_KEY": os.environ.get("COINCAP_API_KEY", "")
+        }
     }
 }
 
 # Global variables for MCP state
 mcp_client = None
-tools: List[Any] = []
-tool_node = ToolNode([])  # Start with an empty list, will be updated
+all_fetched_tools: List[Any] = []
+filtered_tools: List[Any] = []
+tool_node = ToolNode([])
 mcp_initialized = False
-mcp_event_loop = None  # Store a reference to the event loop used for MCP
+mcp_event_loop = None
 
 # Create a global event loop for all MCP operations
 def get_mcp_event_loop():
@@ -73,17 +84,37 @@ def get_mcp_event_loop():
 # Async function to initialize MCP client
 async def init_mcp_client():
     """Initialize the MCP client asynchronously."""
-    global mcp_client, tools
+    global mcp_client, all_fetched_tools, filtered_tools
     if mcp_client is not None:
         logger.info("MCP client already initialized")
-        return tools
+        return filtered_tools
+
     try:
         logger.info("Initializing MCP client asynchronously...")
+        if not os.environ.get("COINCAP_API_KEY"):
+            logger.warning("COINCAP_API_KEY environment variable not set. Crypto analysis tools might have limitations or use CoinCap v2 API.")
+
         mcp_client = MultiServerMCPClient(MCP_SERVER_CONFIG)
         await mcp_client.__aenter__()
-        tools = mcp_client.get_tools()
-        logger.info(f"MCP client initialized with tools: {[t.name for t in tools]}")
-        return tools
+        all_fetched_tools = mcp_client.get_tools()
+
+        logger.info(f"MCP client initialized with fetched tools: {[t.name for t in all_fetched_tools]}")
+
+        allowed_crypto_tool_names = {"get-market-analysis", "get-historical-analysis"}
+        filtered_tools = []
+        for tool in all_fetched_tools:
+            if tool.name in allowed_crypto_tool_names:
+                filtered_tools.append(tool)
+                logger.debug(f"Keeping crypto tool: {tool.name}")
+            elif "crypto" not in tool.name.lower() and "price" not in tool.name.lower():
+                if tool.name != 'get-crypto-price':
+                    filtered_tools.append(tool)
+                    logger.debug(f"Keeping non-crypto/non-price tool: {tool.name}")
+            else:
+                logger.debug(f"Filtering out tool: {tool.name}")
+
+        logger.info(f"Final filtered tools available to agent: {[t.name for t in filtered_tools]}")
+        return filtered_tools
     except Exception as e:
         logger.error(f"Failed to initialize MCP client: {e}")
         logger.error(traceback.format_exc())
@@ -122,7 +153,7 @@ logger.info(f"API key available: {api_key is not None}")
 
 if api_key:
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    model_with_tools = llm  # Bind tools later after initialization
+    model_with_tools = llm
     logger.info("Using OpenAI model")
 else:
     logger.warning("No API key found. Using fake response mode for development.")
@@ -136,22 +167,22 @@ else:
 # Ensure MCP client is initialized before processing tasks
 async def ensure_mcp_initialized():
     """Ensure MCP client is initialized before processing tasks."""
-    global mcp_initialized, model_with_tools, tools, tool_node
+    global mcp_initialized, model_with_tools, filtered_tools, tool_node
     if not mcp_initialized:
         logger.info("First-time MCP initialization")
-        loaded_tools = await init_mcp_client()
-        if loaded_tools:
-            tools = loaded_tools  # Update the global tools list
-            tool_node = ToolNode(tools)  # Create the REAL ToolNode with loaded tools
-            logger.info(f"ToolNode initialized with {len(tools)} tools.")
+        loaded_and_filtered_tools = await init_mcp_client()
+        if loaded_and_filtered_tools:
+            filtered_tools = loaded_and_filtered_tools
+            tool_node = ToolNode(filtered_tools)
+            logger.info(f"ToolNode initialized with {len(filtered_tools)} tools.")
             if api_key:
-                model_with_tools = llm.bind_tools(tools)
-                logger.info(f"Tools bound to model: {len(tools)} tools available")
+                model_with_tools = llm.bind_tools(filtered_tools)
+                logger.info(f"FILTERED Tools bound to model: {len(filtered_tools)} tools available")
         else:
-            logger.warning("MCP tools not initialized. Using empty ToolNode.")
+            logger.warning("MCP tools not initialized or failed. Using empty ToolNode.")
             tool_node = ToolNode([])
         mcp_initialized = True
-    return tools
+    return filtered_tools
 
 from financial_agent_langgraph.common.types import Task, TextPart, TaskStatus, TaskState
 
@@ -197,11 +228,19 @@ def call_model(state: MessagesState):
         messages = state["messages"]
         logger.info(f"Calling model with messages: {messages}")
         system_message = HumanMessage(content="""
-You are a financial analysis expert with access to a PostgreSQL database.
-You can use the following tools to help with your analysis:
+You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools.
 
-- query: Run SQL queries against the database to get financial data
-  Example: SELECT * FROM crypto_quotes WHERE symbol = 'BTC';
+Database Tools:
+- Use the 'query' tool to run SQL queries against the database for internal financial data, including CURRENT crypto prices.
+  Example: SELECT price_usd FROM crypto_quotes WHERE symbol = 'BTC' ORDER BY timestamp DESC LIMIT 1;
+
+External Crypto Analysis Tools (Use these for market context and history, NOT current price):
+- get-market-analysis: Get detailed market analysis for a specific cryptocurrency, including top exchanges, volume distribution, and VWAP.
+    Input: {{ "symbol": "ETH" }}
+- get-historical-analysis: Get historical price analysis for a specific cryptocurrency with customizable time intervals.
+    Input examples:
+    {{ "symbol": "SOL", "days": 7 }}  # 7 days history, default interval (h1)
+    {{ "symbol": "BTC", "interval": "d1", "days": 30 }} # 30 days history, daily interval
 
 Database schema:
 - crypto_quotes (
@@ -248,8 +287,9 @@ Database schema:
     tags TEXT[],
     date_added DATE
   )
-"""
-        )
+
+Combine information from the database and the external analysis tools as needed to answer user queries comprehensively. Prioritize the database 'query' tool for fetching the most recent price.
+""")
         if not any(isinstance(msg, HumanMessage) and "financial analysis expert" in msg.content for msg in messages):
             messages = [system_message] + messages
         if callable(model_with_tools) and not hasattr(model_with_tools, 'invoke'):
@@ -261,8 +301,12 @@ Database schema:
     except Exception as e:
         logger.error(f"Error calling model: {e}")
         logger.error(traceback.format_exc())
-        error_msg = AIMessage(content=f"I encountered an error while analyzing your request: {str(e)}")
-        return {"messages": messages + [error_msg]}
+        error_content = f"Error during model execution: {e}"
+        try:
+            error_content = json.dumps({"error": str(e), "details": traceback.format_exc()})
+        except TypeError:
+            pass
+        return {"messages": [AIMessage(content=f"Sorry, an internal error occurred: {error_content}")]}
 
 async def process_financial_task_async(task: Task) -> Any:
     """
@@ -273,11 +317,19 @@ async def process_financial_task_async(task: Task) -> Any:
         state = extract_task_from_message(task)
         messages = state["messages"]
         system_message = HumanMessage(content="""
-You are a financial analysis expert with access to a PostgreSQL database.
-You can use the following tools to help with your analysis:
+You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools.
 
-- query: Run SQL queries against the database to get financial data
-  Example: SELECT * FROM crypto_quotes WHERE symbol = 'BTC';
+Database Tools:
+- Use the 'query' tool to run SQL queries against the database for internal financial data, including CURRENT crypto prices.
+  Example: SELECT price_usd FROM crypto_quotes WHERE symbol = 'BTC' ORDER BY timestamp DESC LIMIT 1;
+
+External Crypto Analysis Tools (Use these for market context and history, NOT current price):
+- get-market-analysis: Get detailed market analysis for a specific cryptocurrency, including top exchanges, volume distribution, and VWAP.
+    Input: {{ "symbol": "ETH" }}
+- get-historical-analysis: Get historical price analysis for a specific cryptocurrency with customizable time intervals.
+    Input examples:
+    {{ "symbol": "SOL", "days": 7 }}  # 7 days history, default interval (h1)
+    {{ "symbol": "BTC", "interval": "d1", "days": 30 }} # 30 days history, daily interval
 
 Database schema:
 - crypto_quotes (
@@ -325,9 +377,8 @@ Database schema:
     date_added DATE
   )
 
-IMPORTANT: Remember to use async invocation for tools.
-"""
-        )
+Combine information from the database and the external analysis tools as needed to answer user queries comprehensively. Prioritize the database 'query' tool for fetching the most recent price.
+""")
         messages = [system_message] + messages
         workflow = StateGraph(MessagesState)
         workflow.add_node("agent", call_model)

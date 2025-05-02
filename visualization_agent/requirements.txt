@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+crewai
+google-generativeai
+matplotlib
+pydantic
+# Assuming A2A common types are available one level up
+# Add relative path or installable package if needed
+# e.g., -e ../common 
