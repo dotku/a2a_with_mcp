@@ -218,4 +218,40 @@ The system includes robust error handling with fallback mechanisms for:
 ## Acknowledgments
 
 - LangChain and LangGraph for the agent framework
-- The Model Context Protocol (MCP) for standardizing tool access 
+- The Model Context Protocol (MCP) for standardizing tool access
+
+## Environment Variables
+
+The system requires various API keys and configuration settings to be provided as environment variables. Create a `.env` file in the root directory with the following variables:
+
+```
+# OpenAI API for financial agent
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Google API for sentiment and orchestrator agents
+GOOGLE_API_KEY=your_google_api_key_here
+
+# CoinCap API for cryptocurrency data
+COINCAP_API_KEY=your_coincap_api_key_here
+
+# Database configuration for financial agent
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password_here
+DB_NAME=financial_db
+
+# Agent ports (optional, defaults shown)
+SENTIMENT_AGENT_PORT=10000
+FINANCIAL_AGENT_PORT=10001
+ORCHESTRATOR_PORT=8000
+```
+
+Each agent has specific environment variable requirements:
+
+1. **Financial Agent**: Requires `OPENAI_API_KEY`, database configuration, and `COINCAP_API_KEY`
+2. **Sentiment Agent**: Requires `GOOGLE_API_KEY`
+3. **Orchestrator Agent**: Requires `GOOGLE_API_KEY`
+4. **Visualization Agent**: Requires `GOOGLE_API_KEY`
+
+Environment variables can also be set directly in your shell if you prefer not to use a `.env` file. 
