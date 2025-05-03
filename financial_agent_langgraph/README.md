@@ -29,8 +29,8 @@ This agent provides financial analysis capabilities for the Multi-Agent Market R
 
 1.  **Install Python Dependencies:**
     ```bash
-    pip install -r requirements.txt
-    ```
+   pip install -r requirements.txt
+   ```
 2.  **Set Environment Variables:**
     *   `OPENAI_API_KEY`: Your OpenAI API key for the LLM.
     *   `COINCAP_API_KEY`: **(Recommended)** Your CoinCap API key for the `mcp-crypto-price` server. Get one from [pro.coincap.io/dashboard](https://pro.coincap.io/dashboard). If not provided, the crypto server might use the v2 API (being sunset) or have rate limits.
@@ -40,8 +40,8 @@ This agent provides financial analysis capabilities for the Multi-Agent Market R
     ```
 3.  **Run the Server:**
     ```bash
-    python -m financial_agent_langgraph
-    ```
+   python -m financial_agent_langgraph
+   ```
     This command starts the FastAPI server (default port 8001) and automatically launches the two required MCP server subprocesses (Postgres and `mcp-crypto-price` via `npx`). Ensure `npx` can find `mcp-crypto-price` (install globally with `npm install -g mcp-crypto-price` if needed, although `npx` often handles temporary installs).
 
 ## API Endpoints

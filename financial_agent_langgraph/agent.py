@@ -88,7 +88,7 @@ async def init_mcp_client():
     if mcp_client is not None:
         logger.info("MCP client already initialized")
         return filtered_tools
-
+    
     try:
         logger.info("Initializing MCP client asynchronously...")
         if not os.environ.get("COINCAP_API_KEY"):
@@ -183,7 +183,7 @@ async def ensure_mcp_initialized():
             tool_node = ToolNode([])
         mcp_initialized = True
     return filtered_tools
-
+        
 from financial_agent_langgraph.common.types import Task, TextPart, TaskStatus, TaskState
 
 def extract_task_from_message(task: Task) -> Dict[str, Any]:
@@ -241,8 +241,8 @@ External Crypto Analysis Tools (Use these for market context and history, NOT cu
     Input examples:
     {{ "symbol": "SOL", "days": 7 }}  # 7 days history, default interval (h1)
     {{ "symbol": "BTC", "interval": "d1", "days": 30 }} # 30 days history, daily interval
-
-Database schema:
+        
+        Database schema:
 - crypto_quotes (
     id SERIAL,
     symbol TEXT,
@@ -292,15 +292,15 @@ Combine information from the database and the external analysis tools as needed 
 """)
         if not any(isinstance(msg, HumanMessage) and "financial analysis expert" in msg.content for msg in messages):
             messages = [system_message] + messages
-        if callable(model_with_tools) and not hasattr(model_with_tools, 'invoke'):
-            response = model_with_tools(messages)
-        else:
-            response = model_with_tools.invoke(messages)
-        logger.info(f"Model response received: {response}")
-        return {"messages": messages + [response]}
-    except Exception as e:
-        logger.error(f"Error calling model: {e}")
-        logger.error(traceback.format_exc())
+            if callable(model_with_tools) and not hasattr(model_with_tools, 'invoke'):
+                response = model_with_tools(messages)
+            else:
+                response = model_with_tools.invoke(messages)
+            logger.info(f"Model response received: {response}")
+            return {"messages": messages + [response]}
+        except Exception as e:
+            logger.error(f"Error calling model: {e}")
+            logger.error(traceback.format_exc())
         error_content = f"Error during model execution: {e}"
         try:
             error_content = json.dumps({"error": str(e), "details": traceback.format_exc()})
@@ -330,8 +330,8 @@ External Crypto Analysis Tools (Use these for market context and history, NOT cu
     Input examples:
     {{ "symbol": "SOL", "days": 7 }}  # 7 days history, default interval (h1)
     {{ "symbol": "BTC", "interval": "d1", "days": 30 }} # 30 days history, daily interval
-
-Database schema:
+        
+        Database schema:
 - crypto_quotes (
     id SERIAL,
     symbol TEXT,
@@ -378,53 +378,53 @@ Database schema:
   )
 
 Combine information from the database and the external analysis tools as needed to answer user queries comprehensively. Prioritize the database 'query' tool for fetching the most recent price.
-""")
+        """)
         messages = [system_message] + messages
-        workflow = StateGraph(MessagesState)
-        workflow.add_node("agent", call_model)
+            workflow = StateGraph(MessagesState)
+            workflow.add_node("agent", call_model)
         workflow.add_node("tools", tool_node)
-        workflow.add_edge(START, "agent")
-        workflow.add_edge("tools", "agent")
-        workflow.add_conditional_edges(
-            "agent",
-            should_continue,
-            {"tools": "tools", END: END}
-        )
-        app = workflow.compile()
+            workflow.add_edge(START, "agent")
+            workflow.add_edge("tools", "agent")
+            workflow.add_conditional_edges(
+                "agent",
+                should_continue,
+                {"tools": "tools", END: END}
+            )
+            app = workflow.compile()
         result = await app.ainvoke({"messages": messages}, config={"max_iterations": 10})
-        final_messages = result["messages"]
-        response_text = ""
-        for msg in reversed(final_messages):
-            if isinstance(msg, AIMessage) and hasattr(msg, 'content') and msg.content:
-                response_text = msg.content
-                break
+            final_messages = result["messages"]
+            response_text = ""
+            for msg in reversed(final_messages):
+                if isinstance(msg, AIMessage) and hasattr(msg, 'content') and msg.content:
+                        response_text = msg.content
+                        break
         if not response_text:
             last = final_messages[-1]
             response_text = last.content if hasattr(last, 'content') else str(last)
     except Exception as e:
         logger.error(f"Error in process_financial_task_async: {e}")
-        logger.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
         response_text = f"Error while processing financial task: {str(e)}"
-    response_message = create_agent_message(response_text)
-    updated_task = Task(
-        id=task.id,
-        sessionId=task.sessionId,
-        status=TaskStatus(
-            state=TaskState.COMPLETED,
-            message=response_message,
-            timestamp=datetime.now()
-        ),
-        artifacts=[
-            Artifact(
-                name="financial_insights",
-                description="Financial analysis results",
-                parts=[TextPart(text=response_text)]
-            )
-        ],
+        response_message = create_agent_message(response_text)
+        updated_task = Task(
+            id=task.id,
+            sessionId=task.sessionId,
+            status=TaskStatus(
+                state=TaskState.COMPLETED,
+                message=response_message,
+                timestamp=datetime.now()
+            ),
+            artifacts=[
+                Artifact(
+                    name="financial_insights",
+                    description="Financial analysis results",
+                    parts=[TextPart(text=response_text)]
+                )
+            ],
         history=(task.history or []) + [response_message],
-        metadata=task.metadata
-    )
-    return updated_task
+            metadata=task.metadata
+        )
+        return updated_task
 
 # Process a financial task using the shared MCP event loop
 def process_financial_task(task: Task) -> Any:
@@ -437,4 +437,4 @@ def process_financial_task(task: Task) -> Any:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             return loop.run_until_complete(process_financial_task_async(task))
-        raise
+            raise 

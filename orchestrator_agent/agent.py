@@ -5,6 +5,7 @@ import traceback
 import logging
 import time
 import httpx
+import requests
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -297,47 +298,51 @@ class OrchestratorAgent:
             raise
 
     # Helper method for making A2A calls with polling
-    def _call_specialized_agent(self, agent_name=None, agent_url=None, agent_input=None, query_text=None, tool_context=None, max_retries=1) -> str:
-        """
-        Calls a specialized agent, sends a task, and polls for the result.
+    def _call_specialized_agent(self, agent_name=None, agent_url=None, agent_input=None, query_text=None, tool_context=None):
+        """Call a specialized agent using JSON-RPC."""
+        if not agent_name and not agent_url:
+            raise ValueError("Either agent_name or agent_url must be provided")
+            
+        if not agent_url:
+            agent_url = self.agent_urls.get(agent_name, f"http://localhost:8000")
+            
+        # Handle different input cases
+        final_input = None
         
-        Args:
-            agent_name: Name of the agent to call (used to look up URL)
-            agent_url: Direct URL to the agent (alternative to agent_name)
-            agent_input: Input to send to the agent
-            query_text: Backward compatibility for older code
-            tool_context: Optional context from tool invocation
-            max_retries: Number of retries to attempt if a call fails
+        # If ToolContext is provided, extract relevant information
+        if tool_context:
+            logger.warning("ToolContext was passed directly to _call_specialized_agent. This may cause serialization issues. Consider using structured input instead.")
+            if hasattr(tool_context, 'request') and hasattr(tool_context.request, 'body'):
+                # Try to extract the original request body if available
+                try:
+                    final_input = json.dumps({"query": str(tool_context.request.body)})
+                except:
+                    final_input = json.dumps({"query": "Request from Orchestrator"})
+        
+        # Structured input dictionary (preferred)
+        elif agent_input:
+            # If agent_input is already a string, use it directly
+            if isinstance(agent_input, str):
+                final_input = agent_input
+            else:
+                # Convert dictionary to JSON string
+                final_input = json.dumps(agent_input)
+                
+        # Otherwise use query_text as a simple string wrapped in a query field
+        elif query_text:
+            final_input = json.dumps({"query": query_text})
+        else:
+            final_input = json.dumps({"query": "Request from Orchestrator"})
             
-        Returns:
-            JSON string with agent response or error
-        """
+        logger.info(f"Calling specialized agent with input: {final_input[:100]}...")
+        
         try:
-            if not agent_url and not agent_name:
-                return json.dumps({
-                    "status": "error", 
-                    "message": "Either agent_name or agent_url must be provided"
-                })
+            # Generate a unique task ID using a UUID
+            task_id = f"task-{str(uuid.uuid4())}"
+            session_id = str(uuid.uuid4())
             
-            # Get agent URL from mapping if name is provided
-            if not agent_url:
-                agent_url = self.agent_urls.get(agent_name)
-                if not agent_url:
-                    return json.dumps({
-                        "status": "error", 
-                        "message": f"No URL found for agent: {agent_name}"
-                    })
-            
-            # Create task ID and session ID
-            task_id = f"task-{uuid.uuid4()}"
-            session_id = f"{uuid.uuid4()}"
-            
-            # If legacy query_text is provided, wrap it (backward compatibility)
-            if query_text and not agent_input:
-                agent_input = {"query": query_text}
-            
-            # Prepare the agent request payload
-            agent_request = {
+            # Prepare the JSON-RPC message
+            message = {
                 "jsonrpc": "2.0",
                 "id": str(uuid.uuid4()),
                 "method": "tasks/send",
@@ -347,85 +352,105 @@ class OrchestratorAgent:
                     "acceptedOutputModes": ["text"],
                     "message": {
                         "role": "user",
-                        "parts": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(agent_input) if isinstance(agent_input, dict) else agent_input
-                            }
-                        ]
+                        "parts": [{"type": "text", "text": final_input}]
                     }
                 }
             }
             
-            logger.info(f"Sending task/send request to Specialized Agent: {agent_request}")
+            logger.info(f"Sending task/send request to Specialized Agent: {json.dumps(message)}")
             
-            # Make the initial request to send the task
-            attempts = 0
-            error_message = None
-            response_data = None
+            # Send the request
+            response = requests.post(agent_url, json=message)
+            response.raise_for_status()
             
-            while attempts < max_retries:
-                attempts += 1
-                try:
-                    response = httpx.post(agent_url, json=agent_request, timeout=60.0)
-                    response.raise_for_status()  # Raise exception for non-200 responses
-                    response_data = response.json()
-                    logger.info(f"Received task/send response from Specialized Agent: {response_data}")
-                    
-                    # Check if task was completed immediately
-                    if (
-                        "result" in response_data 
-                        and isinstance(response_data["result"], dict)
-                        and "status" in response_data["result"]
-                        and isinstance(response_data["result"]["status"], dict)
-                        and "state" in response_data["result"]["status"]
-                    ):
-                        task_state = response_data["result"]["status"]["state"]
-                        
-                        if task_state == "completed":
-                            logger.info(f"Task {task_id} reported as COMPLETED in initial response. Extracting result.")
-                            # Extract the result from the response
-                            return self._extract_result_from_task_data(response_data["result"], task_id)
-                        elif task_state == "error":
-                            error_message = "Task reported error state"
-                            logger.error(f"Task {task_id} reported ERROR state: {response_data}")
-                            # Try again if we haven't reached max retries
-                            continue
-                            
-                    # Task requires polling - unfortunately this isn't implemented yet
-                    # In reality, we need to poll using tasks/get until completion
-                    return json.dumps({
-                        "status": "error",
-                        "message": "Task requires polling which is not yet implemented"
-                    })
-                    
-                except httpx.RequestError as e:
-                    error_message = f"Request error calling {agent_url}: {str(e)}"
-                    logger.error(error_message)
-                    # Wait before retrying
-                    time.sleep(2)
-                except httpx.HTTPStatusError as e:
-                    error_message = f"HTTP error calling {agent_url}: {str(e)}"
-                    logger.error(error_message)
-                    # Wait before retrying
-                    time.sleep(2)
-                except Exception as e:
-                    error_message = f"Error calling {agent_url}: {str(e)}"
-                    logger.error(error_message)
-                    logger.error(traceback.format_exc())
-                    # Wait before retrying
-                    time.sleep(2)
-                    
-            # If we get here, all retries failed
-            if error_message:
-                return json.dumps({"status": "error", "message": error_message})
-            else:
-                return json.dumps({"status": "error", "message": "Unknown error during specialized agent call"})
+            # Parse the response
+            response_data = response.json()
+            logger.info(f"Received task/send response from Specialized Agent: {json.dumps(response_data)}")
+            
+            # Check if the task was created successfully
+            if "result" in response_data and "id" in response_data["result"]:
+                task_info = response_data["result"]
                 
+                # Check the task status
+                if task_info.get("status", {}).get("state") == "completed":
+                    logger.info(f"Task {task_id} reported as COMPLETED in initial response. Extracting result.")
+                    
+                    # Extract the result from artifacts
+                    artifacts = task_info.get("artifacts", [])
+                    if artifacts:
+                        # Get the first artifact's text content
+                        for artifact in artifacts:
+                            parts = artifact.get("parts", [])
+                            for part in parts:
+                                if part.get("type") == "text":
+                                    result_text = part.get("text", "")
+                                    logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:100]}...")
+                                    
+                                    # Process the result to handle errors and special formats
+                                    try:
+                                        # If "Unable to retrieve sentiment data" is in the response, 
+                                        # this is a user-friendly error message from sentiment analysis
+                                        if "Unable to retrieve sentiment data" in result_text:
+                                            logger.warning("Sentiment analysis failed with a user-friendly error message")
+                                            # This is already in a good format for end users, wrap it in a success JSON
+                                            return json.dumps({"status": "success", "data": result_text})
+                                            
+                                        # Try to parse the result as JSON (to detect error responses)
+                                        parsed_result = json.loads(result_text)
+                                        
+                                        # If it's a success/data structure, return it as is
+                                        if "status" in parsed_result and parsed_result["status"] == "success":
+                                            return result_text
+                                            
+                                        # If it contains an explicit error message
+                                        if "error" in parsed_result or "status" in parsed_result and parsed_result["status"] == "error":
+                                            error_msg = parsed_result.get("error") or parsed_result.get("message", "Unknown error")
+                                            logger.error(f"Error received from specialized agent: {error_msg}")
+                                            # Format as a standardized error response
+                                            return json.dumps({"status": "error", "message": f"Error from {agent_name} agent: {error_msg}"})
+                                        
+                                        # If we get here, it's valid JSON but not in our standard format
+                                        # Return it wrapped in a success structure
+                                        return json.dumps({"status": "success", "data": result_text})
+                                        
+                                    except json.JSONDecodeError:
+                                        # Not JSON, just plain text result
+                                        # Otherwise, attempt to parse JSON
+                                        try:
+                                            parsed_data = json.loads(result_text)
+                                            # Return the already-JSON string if it parsed successfully
+                                            return result_text
+                                        except json.JSONDecodeError:
+                                            # Not JSON, return as text data wrapped in a success JSON structure
+                                            return json.dumps({"status": "success", "data": result_text})
+                    # Fallback: Extract result from status message if no artifacts (less common)
+                    elif ("status" in task_info
+                            and isinstance(task_info.get("status"), dict) 
+                            and "message" in task_info["status"]
+                            and isinstance(task_info["status"].get("message"), dict)
+                            and "parts" in task_info["status"]["message"]
+                            and isinstance(task_info["status"]["message"].get("parts"), list)
+                            and task_info["status"]["message"]["parts"]):
+                        part = task_info["status"]["message"]["parts"][0]
+                        if part.get("type") == "text":
+                            result_text = part.get("text", "")
+                            logger.info(f"Extracted result from status message for task {task_id}: {result_text[:100]}...")
+                            return json.dumps({"status": "success", "data": result_text})
+                            
+            # If no valid result was found
+            error_msg = f"No valid result found in specialized agent response"
+            logger.error(error_msg)
+            return json.dumps({"status": "error", "message": error_msg})
+            
+        except requests.RequestException as e:
+            error_msg = f"Request error calling {agent_url}: {str(e)}"
+            logger.error(error_msg)
+            return json.dumps({"status": "error", "message": error_msg})
+            
         except Exception as e:
-            logger.error(f"Error calling specialized agent: {str(e)}")
-            logger.error(traceback.format_exc())
-            return json.dumps({"status": "error", "message": f"Internal error: {str(e)}"})
+            error_msg = f"Error calling specialized agent: {str(e)}"
+            logger.error(error_msg)
+            return json.dumps({"status": "error", "message": error_msg})
 
     # --- Helper methods to extract data from task results ---
     def _extract_result_from_task_data(self, task_data: Dict, task_id: str) -> str:
@@ -454,43 +479,39 @@ class OrchestratorAgent:
                             "message": "Visualization generated successfully. The image is available as base64-encoded data."
                         }
                         return json.dumps(result_json)
-            
         # Fallback to text artifacts
         if (
-             "artifacts" in task_data 
-             and isinstance(task_data.get("artifacts"), list) 
-             and task_data["artifacts"] # not empty
-             and isinstance(task_data["artifacts"][0], dict)
-             and "parts" in task_data["artifacts"][0]
-             and isinstance(task_data["artifacts"][0].get("parts"), list)
-             and task_data["artifacts"][0]["parts"] # not empty
-             and isinstance(task_data["artifacts"][0]["parts"][0], dict)
-             and "text" in task_data["artifacts"][0]["parts"][0]
-        ):
-            result_text = task_data["artifacts"][0]["parts"][0]["text"]
-            logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:100]}...")
-            
-            # If this is from visualization agent, don't parse as JSON
-            if "visualization" in result_text.lower() or "plot" in result_text.lower() or "chart" in result_text.lower():
-                return json.dumps({
-                    "status": "success", 
-                    "data": result_text,
-                    "message": "Visualization task completed successfully"
-                })
-                
-            # Otherwise, attempt to parse JSON
-            try:
-                parsed_data = json.loads(result_text)
-                # Return the already-JSON string if it parsed successfully
-                return result_text 
-            except json.JSONDecodeError:
-                # Not JSON, return as text data wrapped in a success JSON structure
-                return json.dumps({"status": "success", "data": result_text})
-                
+            "artifacts" in task_data 
+            and isinstance(task_data.get("artifacts"), list) 
+            and task_data["artifacts"] # not empty
+            and isinstance(task_data["artifacts"][0], dict)
+                                     and "parts" in task_data["artifacts"][0]
+                                     and isinstance(task_data["artifacts"][0].get("parts"), list)
+                                     and task_data["artifacts"][0]["parts"] # not empty
+                                     and isinstance(task_data["artifacts"][0]["parts"][0], dict)
+                                     and "text" in task_data["artifacts"][0]["parts"][0]
+                                ):
+                                    result_text = task_data["artifacts"][0]["parts"][0]["text"]
+                                    logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:100]}...")
+                                    # If this is from visualization agent, don't parse as JSON
+                                    if "visualization" in result_text.lower() or "plot" in result_text.lower() or "chart" in result_text.lower():
+                                        return json.dumps({
+                                            "status": "success",
+                                            "data": result_text,
+                                            "message": "Visualization task completed successfully"
+                                        })
+                                    # Otherwise, attempt to parse JSON
+                                    try:
+                                        parsed_data = json.loads(result_text)
+                                        # Return the already-JSON string if it parsed successfully
+                                        return result_text
+                                    except json.JSONDecodeError:
+                                        # Not JSON, return as text data wrapped in a success JSON structure
+                                        return json.dumps({"status": "success", "data": result_text})
         # Fallback: Extract result from status message if no artifacts (less common)
         elif (
             "status" in task_data
-            and isinstance(task_data.get("status"), dict)
+            and isinstance(task_data.get("status"), dict) 
             and "message" in task_data["status"]
             and isinstance(task_data["status"].get("message"), dict)
             and "parts" in task_data["status"]["message"]
@@ -498,7 +519,7 @@ class OrchestratorAgent:
             and task_data["status"]["message"]["parts"] # not empty
             and isinstance(task_data["status"]["message"]["parts"][0], dict)
             and "text" in task_data["status"]["message"]["parts"][0]
-         ):
+        ):
             result_text = task_data["status"]["message"]["parts"][0]["text"]
             logger.info(f"Extracted result from status message for task {task_id}: {result_text[:100]}...")
             
@@ -548,7 +569,22 @@ class OrchestratorAgent:
             Financial statement data for the specified company and fiscal year as a JSON string.
         """
         query_text = f"Fetch financial statements for {company} in {fiscal_year}"
-        return self._call_specialized_agent("financial_data", query_text, tool_context)
+        
+        # Create a structured dictionary for the agent input
+        financial_statements_request = {
+            "query": query_text,
+            "company": company,
+            "fiscal_year": fiscal_year,
+            "action": "fetch_financial_statements"
+        }
+        
+        # Call the specialized agent with the structured request
+        return self._call_specialized_agent(
+            agent_name="financial_data", 
+            agent_input=financial_statements_request,
+            query_text=query_text,
+            tool_context=None  # Don't pass the tool_context directly
+        )
 
     # Added tool for stock price history
     def fetch_stock_price_history(self, ticker: str, tool_context: ToolContext, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
@@ -569,11 +605,28 @@ class OrchestratorAgent:
         if start_date is None or end_date is None:
             logger.info(f"Detected current price request for {ticker} due to missing dates.")
             query_text = f"Get current stock info for {ticker}"
+            action = "get_current_stock_info"
         else:
             # Proceed with historical data request
             query_text = f"Fetch stock price history for {ticker} from {start_date} to {end_date}"
+            action = "fetch_stock_price_history"
             
-        return self._call_specialized_agent("financial_data", query_text, tool_context)
+        # Create a structured dictionary for the agent input
+        stock_price_request = {
+            "query": query_text,
+            "ticker": ticker,
+            "start_date": start_date,
+            "end_date": end_date,
+            "action": action
+        }
+        
+        # Call the specialized agent with the structured request
+        return self._call_specialized_agent(
+            agent_name="financial_data", 
+            agent_input=stock_price_request,
+            query_text=query_text,
+            tool_context=None  # Don't pass the tool_context directly
+        )
 
     # Added tool for SQL query
     def run_sql_query(self, query: str, tool_context: ToolContext) -> str:
@@ -587,9 +640,22 @@ class OrchestratorAgent:
             The result of the SQL query as a JSON string.
         """
         # The query text sent to the financial agent should clearly indicate the intent to run SQL
-        # The financial agent's LLM should recognize this based on its SYSTEM_INSTRUCTION
         query_text = f"Run SQL query: {query}"
-        return self._call_specialized_agent("financial_data", query_text, tool_context)
+        
+        # Create a structured dictionary for the agent input
+        sql_query_request = {
+            "query": query_text,
+            "sql": query,
+            "action": "run_sql_query"
+        }
+        
+        # Call the specialized agent with the structured request
+        return self._call_specialized_agent(
+            agent_name="financial_data", 
+            agent_input=sql_query_request,
+            query_text=query_text,
+            tool_context=None  # Don't pass the tool_context directly
+        )
 
     # --- NEW: Tool for Crypto Market Analysis ---
     def get_crypto_market_analysis(self, symbol: str, tool_context: ToolContext) -> str:
@@ -605,7 +671,21 @@ class OrchestratorAgent:
         """
         query_text = f"Perform market analysis for {symbol}"
         logger.info(f"Delegating market analysis for {symbol} to financial agent.")
-        return self._call_specialized_agent("financial_data", query_text, tool_context)
+        
+        # Create a structured dictionary for the agent input
+        market_analysis_request = {
+            "query": query_text,
+            "symbol": symbol,
+            "action": "market_analysis"
+        }
+        
+        # Call the specialized agent with the structured request
+        return self._call_specialized_agent(
+            agent_name="financial_data", 
+            agent_input=market_analysis_request,
+            query_text=query_text,
+            tool_context=None  # Don't pass the tool_context directly
+        )
 
     # --- NEW: Tool for Crypto Historical Analysis ---
     def get_crypto_historical_analysis(self, symbol: str, tool_context: ToolContext, interval: Optional[str] = None, days: Optional[int] = None) -> str:
@@ -629,31 +709,65 @@ class OrchestratorAgent:
 
         query_text = " ".join(query_parts)
         logger.info(f"Delegating historical analysis query to financial agent: {query_text}")
-        return self._call_specialized_agent("financial_data", query_text, tool_context)
+        
+        # Create a structured dictionary for the agent input
+        historical_analysis_request = {
+            "query": query_text,
+            "symbol": symbol,
+            "action": "historical_analysis",
+            "interval": interval,
+            "days": days
+        }
+        
+        # Call the specialized agent with the structured request
+        return self._call_specialized_agent(
+            agent_name="financial_data", 
+            agent_input=historical_analysis_request,
+            query_text=query_text,
+            tool_context=None  # Don't pass the tool_context directly
+        )
 
     # Updated fetch_news_sentiment with subreddit parameter
     def fetch_news_sentiment(self, company: str, subreddit: str, tool_context: ToolContext, timeframe: Optional[str] = "latest") -> str:
         """
         Fetch news and social media sentiment for a specific company/crypto from a specified subreddit using the Sentiment Analysis Agent.
-
+        
         Args:
             company: The company/crypto ticker symbol or identifier (e.g., 'AAPL', 'GOOG', 'BTC').
             subreddit: The target subreddit name (e.g., 'Bitcoin', 'ethereum').
             tool_context: The context provided by the ADK framework.
             timeframe: Optional. Time period for sentiment analysis (e.g., 'last_week', 'last_month'). Defaults to 'latest'.
-
+            
         Returns:
             Sentiment analysis results as a JSON string.
         """
-        # Construct the query based on the timeframe and subreddit
-        if timeframe == "latest":
-            query_text = f"Get latest sentiment for {company} from subreddit {subreddit}"
-        else:
-            query_text = f"Get sentiment for {company} from subreddit {subreddit} over the {timeframe}"
-            
+        # Normalize subreddit name - remove 'r/' prefix if present
+        if subreddit.startswith('r/'):
+            subreddit = subreddit[2:]
+            logger.info(f"Removed r/ prefix from subreddit name: {subreddit}")
+
+        # Generate a session ID for this request to help with tracing and debugging
+        session_id = str(uuid.uuid4())
+
+        query_text = f"Get latest sentiment for {company} from subreddit {subreddit}"
         logger.info(f"Calling sentiment agent with query: {query_text}")
-        # Call the specialized agent instead of returning mock data
-        return self._call_specialized_agent("sentiment_analysis", query_text, tool_context)
+        
+        # Create a proper agent_input dictionary
+        sentiment_request = {
+            "query": query_text,
+            "company": company,
+            "subreddit": subreddit,
+            "timeframe": timeframe,
+            "session_id": session_id
+        }
+        
+        # Call the specialized agent with the structured request
+        return self._call_specialized_agent(
+            agent_name="sentiment_analysis", 
+            agent_input=sentiment_request,
+            query_text=query_text,
+            tool_context=None  # Don't pass the tool_context directly
+        )
 
     def analyze_competitors(self, company: str, metrics: List[str], tool_context: ToolContext) -> str:
         """
@@ -667,7 +781,23 @@ class OrchestratorAgent:
             Competitor analysis results
         """
         try:
-            # In a real implementation, this would make an A2A call to the Competitor Analysis Agent
+            # Create a structured request
+            query_text = f"Analyze competitors for {company} based on {', '.join(metrics)}"
+            competitors_request = {
+                "query": query_text,
+                "company": company,
+                "metrics": metrics,
+                "action": "analyze_competitors"
+            }
+            
+            # In a real implementation, this would call the specialized agent
+            # return self._call_specialized_agent(
+            #     agent_name="competitor_analysis", 
+            #     agent_input=competitors_request,
+            #     query_text=query_text,
+            #     tool_context=None
+            # )
+            
             # For demonstration, we'll return mock data
             return json.dumps({
                 "company": company,
@@ -794,8 +924,9 @@ class OrchestratorAgent:
             agent_url = self.agent_urls.get("visualization", "http://localhost:8004")
             result = self._call_specialized_agent(
                 agent_url=agent_url,
-                agent_input=json.dumps(visualization_request),
-                tool_context=tool_context
+                agent_input=visualization_request,
+                query_text=plot_description,
+                tool_context=None  # Don't pass the tool_context directly
             )
             
             # Parse the result
@@ -860,6 +991,24 @@ class OrchestratorAgent:
                 "market_analysis": "# Market Analysis Template\\n1. Industry Overview\\n2. Market Size and Growth\\n3. Key Trends\\n4. Competitive Landscape\\n5. Future Outlook",
                 "investment_thesis": "# Investment Thesis Template\\n1. Company Overview\\n2. Financials\\n3. Competitive Position\\n4. Growth Drivers\\n5. Risks and Mitigations\\n6. Valuation and Recommendation"
             }
+            
+            # Create a structured request
+            query_text = f"Get {template_type} template"
+            template_request = {
+                "query": query_text,
+                "template_type": template_type,
+                "action": "get_template"
+            }
+            
+            # Call the specialized agent with the structured request or return mock data for now
+            # return self._call_specialized_agent(
+            #     agent_name="prompt_templates", 
+            #     agent_input=template_request,
+            #     query_text=query_text,
+            #     tool_context=None
+            # )
+            
+            # Just return mock data for now
             return json.dumps({
                 "template_type": template_type,
                 "status": "Template retrieved",
