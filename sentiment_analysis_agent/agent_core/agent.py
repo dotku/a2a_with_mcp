@@ -158,7 +158,7 @@ class SentimentAnalysisAgent:
   """Agent that analyzes Bitcoin sentiment based on Reddit data."""
 
   def __init__(self):
-    self.model = CrewAILLM(model="gemini/gemini-2.0-flash-lite", api_key=get_api_key())
+    self.model = CrewAILLM(model="gemini/gemini-2.0-flash", api_key=get_api_key())
     
     # --- Define Templates for dynamic roles/goals/tasks ---
     self.agent_role_template = "{crypto_name} Sentiment Analyst"

@@ -1,11 +1,16 @@
+import os
+import sys
 import json
 import uuid
-from typing import Any, AsyncIterable, Dict, List, Optional
-import traceback
-import logging
 import time
-import httpx
+import asyncio
+import logging
+import traceback
+from typing import Dict, List, Any, Optional, AsyncIterable
+from datetime import datetime
+
 import requests
+import httpx
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -306,6 +311,11 @@ class OrchestratorAgent:
         if not agent_url:
             agent_url = self.agent_urls.get(agent_name, f"http://localhost:8000")
             
+        # For financial_data agent, use port 8001
+        if agent_name == "financial_data" and "8000" in agent_url:
+            agent_url = agent_url.replace("8000", "8001")
+            logger.info(f"Using financial agent URL: {agent_url}")
+            
         # Handle different input cases
         final_input = None
         
@@ -370,10 +380,58 @@ class OrchestratorAgent:
             # Check if the task was created successfully
             if "result" in response_data and "id" in response_data["result"]:
                 task_info = response_data["result"]
+                task_id = task_info.get("id")
+                
+                # Poll for task completion if not already completed
+                max_retries = 5
+                retry_count = 0
+                poll_interval = 1  # Start with 1 second
+                
+                if task_info.get("status", {}).get("state") != "completed":
+                    logger.info(f"Task {task_id} not yet completed, polling for status...")
+                    
+                    while retry_count < max_retries:
+                        # Wait before polling
+                        time.sleep(poll_interval)
+                        
+                        # Prepare the status request message
+                        status_message = {
+                            "jsonrpc": "2.0",
+                            "id": str(uuid.uuid4()),
+                            "method": "tasks/get",
+                            "params": {
+                                "id": task_id
+                            }
+                        }
+                        
+                        try:
+                            # Send the status request
+                            status_response = requests.post(agent_url, json=status_message)
+                            status_response.raise_for_status()
+                            
+                            # Parse the status response
+                            status_data = status_response.json()
+                            
+                            if "result" in status_data:
+                                task_info = status_data["result"]
+                                
+                                if task_info.get("status", {}).get("state") == "completed":
+                                    logger.info(f"Task {task_id} completed successfully after polling")
+                                    break
+                            
+                            # Increment retry count and increase poll interval with exponential backoff
+                            retry_count += 1
+                            poll_interval = min(poll_interval * 2, 8)  # Double the interval up to max 8 seconds
+                            logger.info(f"Task not yet completed, retrying in {poll_interval} seconds (retry {retry_count}/{max_retries})")
+                            
+                        except Exception as e:
+                            logger.error(f"Error polling for task status: {e}")
+                            retry_count += 1
+                            poll_interval = min(poll_interval * 2, 8)
                 
                 # Check the task status
                 if task_info.get("status", {}).get("state") == "completed":
-                    logger.info(f"Task {task_id} reported as COMPLETED in initial response. Extracting result.")
+                    logger.info(f"Task {task_id} reported as COMPLETED. Extracting result.")
                     
                     # Extract the result from artifacts
                     artifacts = task_info.get("artifacts", [])
@@ -393,6 +451,18 @@ class OrchestratorAgent:
                                         if "Unable to retrieve sentiment data" in result_text:
                                             logger.warning("Sentiment analysis failed with a user-friendly error message")
                                             # This is already in a good format for end users, wrap it in a success JSON
+                                            return json.dumps({"status": "success", "data": result_text})
+                                        
+                                        # Detect financial/Bitcoin price data directly in text format
+                                        if ("Price" in result_text and "Bitcoin" in result_text and "$" in result_text) or \
+                                           ("Current Price" in result_text and "$" in result_text) or \
+                                           ("Price (USD)" in result_text and "$" in result_text):
+                                            logger.info("Found financial price data in text format")
+                                            return json.dumps({"status": "success", "data": result_text})
+                                        
+                                        # Check for financial agent results with dollar amounts and percentage changes
+                                        if "Current Price (USD)" in result_text and "%" in result_text:
+                                            logger.info("Found valid financial agent response with price information")
                                             return json.dumps({"status": "success", "data": result_text})
                                             
                                         # Try to parse the result as JSON (to detect error responses)
@@ -437,6 +507,28 @@ class OrchestratorAgent:
                             logger.info(f"Extracted result from status message for task {task_id}: {result_text[:100]}...")
                             return json.dumps({"status": "success", "data": result_text})
                             
+                    # For cryptocurrency/BTC/ETH prices - check if history has the price
+                    if "status" in task_info and task_info.get("status", {}).get("state") == "completed" and "history" in task_info:
+                        history = task_info.get("history", [])
+                        if isinstance(history, list) and history:
+                            for message in reversed(history): # Check from newest to oldest
+                                if isinstance(message, dict) and "role" in message and message.get("role") == "agent":
+                                    parts = message.get("parts", [])
+                                    for part in parts:
+                                        if isinstance(part, dict) and part.get("type") == "text":
+                                            result_text = part.get("text", "")
+                                            # Look for specific patterns in Bitcoin/crypto price responses
+                                            if (("Bitcoin" in result_text or "BTC" in result_text) and 
+                                                ("Price" in result_text or "price" in result_text) and 
+                                                ("$" in result_text)):
+                                                logger.info(f"Found Bitcoin price information in history: {result_text[:100]}...")
+                                                return json.dumps({"status": "success", "data": result_text})
+                                            # More general crypto responses
+                                            if (("Current Price" in result_text or "current price" in result_text) and 
+                                                ("$" in result_text and "%" in result_text)):
+                                                logger.info(f"Found crypto price information in history: {result_text[:100]}...")
+                                                return json.dumps({"status": "success", "data": result_text})
+            
             # If no valid result was found
             error_msg = f"No valid result found in specialized agent response"
             logger.error(error_msg)
@@ -586,7 +678,72 @@ class OrchestratorAgent:
             tool_context=None  # Don't pass the tool_context directly
         )
 
-    # Added tool for stock price history
+    # Add a new helper method to get crypto prices directly using SQL
+    def _get_crypto_price_direct(self, symbol: str) -> str:
+        """
+        Get cryptocurrency price directly using SQL query to ensure reliability.
+        
+        Args:
+            symbol: The cryptocurrency symbol (e.g., 'BTC', 'ETH')
+            
+        Returns:
+            The formatted price data or error message
+        """
+        logger.info(f"Getting direct crypto price for {symbol}")
+        sql_request = {
+            "query": f"Get latest price for {symbol} using SQL",
+            "sql": f"SELECT price_usd, market_cap, volume_24h, pct_change_1h, pct_change_24h, pct_change_7d, timestamp FROM crypto_quotes WHERE symbol = '{symbol}' ORDER BY timestamp DESC LIMIT 1;",
+            "action": "run_sql_query"
+        }
+        
+        sql_response = self._call_specialized_agent(
+            agent_name="financial_data",
+            agent_input=sql_request,
+            query_text=f"Direct SQL query for {symbol}"
+        )
+        
+        try:
+            sql_data = json.loads(sql_response)
+            if sql_data.get("status") == "success" and "data" in sql_data:
+                # Try to parse the response as JSON
+                try:
+                    price_data = json.loads(sql_data.get("data", "{}"))
+                    if "price_usd" in price_data:
+                        timestamp_str = ""
+                        if "timestamp" in price_data:
+                            try:
+                                # Convert timestamp to readable format if available
+                                ts = price_data.get("timestamp")
+                                if isinstance(ts, str):
+                                    timestamp = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                                    timestamp_str = f"(as of {timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+                            except Exception as e:
+                                logger.warning(f"Error formatting timestamp: {e}")
+                                
+                        formatted_response = f"Here is the current information for {symbol} {timestamp_str}:\n\n"
+                        formatted_response += f"- Current Price (USD): ${float(price_data.get('price_usd', 0)):,.2f}\n"
+                        if "market_cap" in price_data:
+                            formatted_response += f"- Market Cap: ${float(price_data.get('market_cap', 0)):,.2f}\n"
+                        if "volume_24h" in price_data:
+                            formatted_response += f"- 24h Trading Volume: ${float(price_data.get('volume_24h', 0)):,.2f}\n"
+                        if "pct_change_1h" in price_data:
+                            formatted_response += f"- Percentage Change (1h): {float(price_data.get('pct_change_1h', 0)):.2f}%\n"
+                        if "pct_change_24h" in price_data:
+                            formatted_response += f"- Percentage Change (24h): {float(price_data.get('pct_change_24h', 0)) > 0 and '+' or ''}{float(price_data.get('pct_change_24h', 0)):.2f}%\n"
+                        if "pct_change_7d" in price_data:
+                            formatted_response += f"- Percentage Change (7d): {float(price_data.get('pct_change_7d', 0)) > 0 and '+' or ''}{float(price_data.get('pct_change_7d', 0)):.2f}%\n"
+                        
+                        return json.dumps({"status": "success", "data": formatted_response})
+                except json.JSONDecodeError:
+                    # The SQL result might be a string
+                    return sql_response
+                    
+        except Exception as e:
+            logger.error(f"Error processing direct crypto price query: {e}")
+        
+        return json.dumps({"status": "error", "message": f"Failed to retrieve price for {symbol}"})
+
+    # Hook into fetch_stock_price_history for BTC prices
     def fetch_stock_price_history(self, ticker: str, tool_context: ToolContext, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
         """
         Fetch historical stock prices for a given ticker symbol and date range using the Financial Agent.
@@ -601,6 +758,15 @@ class OrchestratorAgent:
         Returns:
             Historical stock price data OR current stock info as a JSON string.
         """
+        # For cryptocurrencies, handle specially when requesting current price
+        is_crypto = ticker.upper() in ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "DOT"] or "crypto" in ticker.lower()
+        
+        # For current crypto prices, use direct SQL method
+        if is_crypto and (start_date is None or end_date is None):
+            logger.info(f"Using direct crypto price query for {ticker}")
+            return self._get_crypto_price_direct(ticker.upper())
+            
+        # Otherwise use standard approach
         # Determine if it's a current price request based on missing dates
         if start_date is None or end_date is None:
             logger.info(f"Detected current price request for {ticker} due to missing dates.")
@@ -621,12 +787,22 @@ class OrchestratorAgent:
         }
         
         # Call the specialized agent with the structured request
-        return self._call_specialized_agent(
+        response = self._call_specialized_agent(
             agent_name="financial_data", 
             agent_input=stock_price_request,
             query_text=query_text,
             tool_context=None  # Don't pass the tool_context directly
         )
+        
+        # If error response and it's crypto, try the direct method as fallback
+        try:
+            response_data = json.loads(response)
+            if response_data.get("status") == "error" and is_crypto and (start_date is None or end_date is None):
+                logger.info(f"Error in standard approach for {ticker}, trying direct crypto price query as fallback")
+                return self._get_crypto_price_direct(ticker.upper())
+            return response
+        except Exception:
+            return response
 
     # Added tool for SQL query
     def run_sql_query(self, query: str, tool_context: ToolContext) -> str:
