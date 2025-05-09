@@ -11,6 +11,9 @@ import subprocess
 import time
 import threading
 import queue
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
