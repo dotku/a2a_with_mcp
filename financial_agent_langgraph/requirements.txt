@@ -1,14 +1,14 @@
-fastapi>=0.109.2
-uvicorn>=0.25.0
-pydantic>=2.5.1
-python-dotenv>=1.0.1
-websockets>=12.0
-langchain-anthropic>=0.1.2
-langchain>=0.1.11
-langgraph>=0.1.11
-langchain-openai>=0.1.0
-requests>=2.28.0
-
+fastapi
+uvicorn
+pydantic
+python-dotenv
+websockets
+langchain-anthropic
+langchain
+langgraph
+langchain-openai
+requests
 # MCP integration dependencies
-mcp>=0.1.0
-langchain-mcp-adapters>=0.1.0 
+mcp
+langchain-mcp-adapters
+asyncpg
