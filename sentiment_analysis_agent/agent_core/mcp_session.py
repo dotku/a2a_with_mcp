@@ -50,45 +50,68 @@ class SimpleMCPSession:
                 # Socket creation failed, unlikely but handle it
                 logger.warning(f"Failed to check if port {self.port} is in use")
             
-            # Get paths
+            # Determine potential paths for the MCP server's 'src' directory
             agent_core_dir = os.path.dirname(os.path.abspath(__file__))
             sentiment_analysis_agent_dir = os.path.dirname(agent_core_dir)
+            # Assuming the parent of sentiment_analysis_agent_dir is the project root
+            project_root_dir = os.path.dirname(sentiment_analysis_agent_dir)
 
             mcp_server_reddit_dir_env = os.getenv("MCP_SERVER_REDDIT_DIR")
             
-            if mcp_server_reddit_dir_env:
-                # MCP_SERVER_REDDIT_DIR should point to the "mcp-server-reddit" directory
-                # This path could be absolute or relative to the CWD of the main application.
-                # os.path.abspath will resolve it if it's relative.
-                mcp_server_path_base = os.path.abspath(mcp_server_reddit_dir_env)
-                src_dir = os.path.join(mcp_server_path_base, "src")
-            else:
-                # Default: assumes mcp-server-reddit is a child of sentiment_analysis_agent_dir,
-                # which means it's a sibling to agent_core_dir.
-                # E.g., sentiment_analysis_agent/
-                #           ├── agent_core/
-                #           │   └── mcp_session.py
-                #           └── mcp-server-reddit/
-                #               └── src/
-                src_dir = os.path.normpath(os.path.join(sentiment_analysis_agent_dir, "mcp-server-reddit", "src"))
+            paths_to_try = []
+            error_origins = [] # To explain how each path was derived for the error message
+            src_dir = None
 
-            if not os.path.isdir(src_dir):
-                error_message = (
-                    f"The MCP server source directory ('src') was not found. "
-                    f"Attempted to use path: '{src_dir}'. "
+            if mcp_server_reddit_dir_env:
+                # If env var is set, it's the only path we consider based on it.
+                # MCP_SERVER_REDDIT_DIR should point to the "mcp-server-reddit" directory itself.
+                mcp_server_path_base = os.path.abspath(mcp_server_reddit_dir_env)
+                paths_to_try.append(os.path.join(mcp_server_path_base, "src"))
+                error_origins.append(
+                    f"derived from MCP_SERVER_REDDIT_DIR environment variable (set to '{mcp_server_reddit_dir_env}'). It expected '{mcp_server_path_base}' to contain a 'src' subdirectory."
                 )
-                if mcp_server_reddit_dir_env:
-                    error_message += (
-                        f"This path was constructed based on the MCP_SERVER_REDDIT_DIR environment variable, which was set to '{mcp_server_reddit_dir_env}'. "
-                        f"Please ensure this variable points to your 'mcp-server-reddit' directory, and that this directory contains a 'src' subdirectory."
+            else:
+                # Default assumption 1: mcp-server-reddit is a sibling of agent_core
+                # ProjectStructure: <project_root>/sentiment_analysis_agent/mcp-server-reddit/src
+                path1_base = os.path.join(sentiment_analysis_agent_dir, "mcp-server-reddit")
+                path1_src = os.path.join(path1_base, "src")
+                paths_to_try.append(path1_src)
+                error_origins.append(
+                    f"assuming 'mcp-server-reddit' is at '{path1_base}' (sibling to 'agent_core'), looking for 'src' within it."
+                )
+
+                # Default assumption 2: mcp-server-reddit is a sibling of sentiment_analysis_agent
+                # ProjectStructure: <project_root>/mcp-server-reddit/src
+                path2_base = os.path.join(project_root_dir, "mcp-server-reddit")
+                path2_src = os.path.join(path2_base, "src")
+                paths_to_try.append(path2_src)
+                error_origins.append(
+                    f"assuming 'mcp-server-reddit' is at '{path2_base}' (sibling to '{os.path.basename(sentiment_analysis_agent_dir)}'), looking for 'src' within it."
+                )
+            
+            for i, current_path_try in enumerate(paths_to_try):
+                logger.debug(f"Attempting to find MCP server 'src' at: {current_path_try}")
+                if os.path.isdir(current_path_try):
+                    src_dir = current_path_try
+                    logger.info(f"Found MCP server 'src' directory at: {src_dir} ({error_origins[i].split(' (')[0]})")
+                    break 
+            
+            if src_dir is None:
+                error_message = (
+                    f"The MCP server source directory ('src') could not be found.\\n"
+                    f"Context: The 'mcp_session.py' script is located at: '{agent_core_dir}'.\\n"
+                    f"Attempted the following locations for the 'src' directory:\\n"
+                )
+                for i, p_try in enumerate(paths_to_try):
+                    error_message += f"  - Path: '{p_try}'\\n    Reasoning: {error_origins[i]}\\n"
+                
+                if not mcp_server_reddit_dir_env:
+                     error_message += (
+                        f"To resolve this: ensure your 'mcp-server-reddit/src' directory exists and matches one of the assumed project structures, "
+                        f"or set the MCP_SERVER_REDDIT_DIR environment variable to point to your 'mcp-server-reddit' directory "
+                        f"(which must contain a 'src' subdirectory)."
                     )
-                else:
-                    expected_mcp_server_reddit_location = os.path.join(sentiment_analysis_agent_dir, "mcp-server-reddit")
-                    error_message += (
-                        f"This path was calculated relative to the mcp_session.py script (located at '{agent_core_dir}'). "
-                        f"It expected the 'mcp-server-reddit' directory to be at '{expected_mcp_server_reddit_location}', containing a 'src' subdirectory. "
-                        f"If your 'mcp-server-reddit' directory is located elsewhere, please set the MCP_SERVER_REDDIT_DIR environment variable to its path."
-                    )
+                # If mcp_server_reddit_dir_env was set, the error message for it is already included in error_origins.
                 raise FileNotFoundError(error_message)
             
             # Setup environment with proper PYTHONPATH
