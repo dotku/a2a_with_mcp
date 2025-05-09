@@ -16,6 +16,11 @@ _project_root_abs_path = os.path.dirname(_demo_dir_abs_path)
 
 if _project_root_abs_path not in sys.path:
     sys.path.insert(0, _project_root_abs_path) # Use insert(0, ...) for higher precedence
+
+print(f"DEBUG: Running from __file__: {__file__}")
+print(f"DEBUG: Absolute path of __file__: {_main_py_file_abs_path}")
+print(f"DEBUG: Calculated project root to add to sys.path: {_project_root_abs_path}")
+print(f"DEBUG: Current sys.path after modification: {sys.path}")
 # --- End of sys.path modification ---
 
 import asyncio
