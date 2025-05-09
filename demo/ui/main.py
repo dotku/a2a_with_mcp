@@ -1,12 +1,24 @@
-
 """A UI solution and host service to interact with the agent framework.
 run:
   uv main.py
 """
 import sys
+import os # For path manipulation
+
+# --- Start of sys.path modification ---
+# Add the project root to sys.path to allow for absolute imports from project root
+# This script is located at <project_root>/demo/ui/main.py
+_main_py_file_abs_path = os.path.abspath(__file__)
+_ui_dir_abs_path = os.path.dirname(_main_py_file_abs_path)
+_demo_dir_abs_path = os.path.dirname(_ui_dir_abs_path)
+# _project_root_abs_path should now be the <project_root> directory
+_project_root_abs_path = os.path.dirname(_demo_dir_abs_path)
+
+if _project_root_abs_path not in sys.path:
+    sys.path.insert(0, _project_root_abs_path) # Use insert(0, ...) for higher precedence
+# --- End of sys.path modification ---
+
 import asyncio
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 import threading
 
 import mesop as me
