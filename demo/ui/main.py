@@ -3,8 +3,10 @@
 run:
   uv main.py
 """
+import sys
 import asyncio
 import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 import threading
 
 import mesop as me
@@ -20,7 +22,6 @@ from pages.settings import settings_page_content
 from pages.task_list import task_list_page
 from state import host_agent_service
 from service.server.server import ConversationServer
-
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.wsgi import WSGIMiddleware
 from dotenv import load_dotenv
