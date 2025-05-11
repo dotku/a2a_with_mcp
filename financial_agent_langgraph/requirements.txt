@@ -8,6 +8,7 @@ langchain
 langgraph
 langchain-openai
 requests
+httpx
 # MCP integration dependencies
 mcp
 langchain-mcp-adapters

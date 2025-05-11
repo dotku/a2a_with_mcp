@@ -1,9 +1,13 @@
 {
-  "schema_version": "v1",
   "name": "Orchestrator Agent",
   "description": "Agent that breaks down user tasks and delegates them to specialized agents",
-  "url": "http://localhost:8000/tasks/send",
+  "url": "http://localhost:8000/",
   "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "stateTransitionHistory": true
+  },
   "skills": [
     {
       "id": "task_decomposition",
@@ -26,23 +30,9 @@
       "description": "Ability to compile and integrate results from multiple agents"
     }
   ],
-  "task_types": [
-    "market_analysis",
-    "investment_decisions",
-    "financial_research"
-  ],
-  "capabilities": {
-    "tasks/send": {
-      "description": "Send a task to the orchestrator agent"
-    },
-    "tasks/sendSubscribe": {
-      "description": "Send a task to the orchestrator agent and subscribe to updates"
-    },
-    "tasks/{task_id}/updates": {
-      "description": "Get updates for a task in progress"
-    }
-  },
-  "runtime": {
-    "environment": "python"
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text"],
+  "authentication": {
+    "schemes": ["none"]
   }
 }

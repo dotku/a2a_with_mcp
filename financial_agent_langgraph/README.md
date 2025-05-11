@@ -34,9 +34,11 @@ This agent provides financial analysis capabilities for the Multi-Agent Market R
 2.  **Set Environment Variables:**
     *   `OPENAI_API_KEY`: Your OpenAI API key for the LLM.
     *   `COINCAP_API_KEY`: **(Recommended)** Your CoinCap API key for the `mcp-crypto-price` server. Get one from [pro.coincap.io/dashboard](https://pro.coincap.io/dashboard). If not provided, the crypto server might use the v2 API (being sunset) or have rate limits.
+    *   `FIN_AGENT_BASE_URL`: Base URL where the agent is hosted. Used in the agent card for discovery. Defaults to "http://localhost:8001/" if not specified.
     ```bash
     export OPENAI_API_KEY="your_openai_key"
     export COINCAP_API_KEY="your_coincap_key" 
+    export FIN_AGENT_BASE_URL="https://your-agent-host.example.com/" 
     ```
 3.  **Run the Server:**
     ```bash
@@ -44,26 +46,147 @@ This agent provides financial analysis capabilities for the Multi-Agent Market R
    ```
     This command starts the FastAPI server (default port 8001) and automatically launches the two required MCP server subprocesses (Postgres and `mcp-crypto-price` via `npx`). Ensure `npx` can find `mcp-crypto-price` (install globally with `npm install -g mcp-crypto-price` if needed, although `npx` often handles temporary installs).
 
+## API Configuration
+
+### Base URL
+- **Environment Variable**: `FIN_AGENT_BASE_URL`
+- **Default Value**: `http://localhost:8001/`
+- **Usage**: Set this environment variable to specify where the agent is hosted
+
+### Capabilities
+- **Streaming**: `true` - Agent supports real-time streaming of results
+- **Push Notifications**: `true` - Agent can send HTTP callbacks for task updates
+- **State Transition History**: `true` - Agent maintains and provides task state history
+
 ## API Endpoints
 
 - `POST /`: Main JSON-RPC endpoint for A2A requests.
-- `GET /.well-known/agent.json`: Returns the agent metadata. (Ensure this is implemented/updated in `server.py`).
-- `GET /health`: Health check endpoint. (Ensure this is implemented in `server.py`).
-- (WebSocket endpoint if implemented).
+- `GET /.well-known/agent.json`: Returns the agent metadata.
+- `GET /health`: Health check endpoint.
+- `WebSocket /ws`: WebSocket endpoint for streaming responses.
 
-## A2A Methods Supported
+## Supported JSON-RPC Methods
 
-(List relevant methods like `tasks/send`, `tasks/get` etc., as implemented in `server.py`).
+| Method | Description |
+|--------|-------------|
+| `tasks/send` | Send a task to the financial agent for processing |
+| `tasks/get` | Get information about an existing task |
+| `tasks/cancel` | Cancel a running task |
+| `tasks/sendSubscribe` | Create a task and subscribe to updates via WebSocket |
+| `setPushNotificationConfig` | Configure push notifications for a task |
+| `getPushNotificationConfig` | Get the push notification configuration for a task |
+
+## Example Payloads
+
+### Example Request (tasks/send)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-123",
+  "method": "tasks/send",
+  "params": {
+    "id": "task-123",
+    "sessionId": "session-456",
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "What is the current P/E ratio for Apple?"
+        }
+      ]
+    },
+    "pushNotification": {
+      "url": "https://your-callback-service.example.com/webhooks",
+      "token": "your-auth-token"
+    }
+  }
+}
+```
+
+### Example Response (tasks/send)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-123",
+  "result": {
+    "id": "task-123",
+    "sessionId": "session-456",
+    "status": {
+      "state": "SUBMITTED",
+      "timestamp": "2023-06-14T18:30:45.123Z"
+    }
+  }
+}
+```
+
+### Example Response (tasks/get after completion)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-789",
+  "result": {
+    "id": "task-123",
+    "sessionId": "session-456",
+    "status": {
+      "state": "COMPLETED",
+      "timestamp": "2023-06-14T18:31:15.456Z",
+      "message": {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "As of the latest data, Apple (AAPL) has a P/E ratio of approximately 30.25."
+          }
+        ]
+      }
+    },
+    "artifacts": [
+      {
+        "name": "financial-metrics",
+        "description": "Financial metrics for Apple",
+        "parts": [
+          {
+            "type": "text",
+            "text": "{ \"symbol\": \"AAPL\", \"pe_ratio\": 30.25, \"market_cap\": \"2.5T\", \"price\": 182.63 }"
+          }
+        ]
+      }
+    ],
+    "history": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "What is the current P/E ratio for Apple?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "As of the latest data, Apple (AAPL) has a P/E ratio of approximately 30.25."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Project Structure
 
-- `agent.py`: LangGraph financial analysis workflow, MCP client initialization, tool filtering.
-- `task_manager.py`: Manages task lifecycle and state.
-- `server.py`: FastAPI server for A2A endpoints.
-- `__main__.py`: Entry point for running the server.
-- `common/`: Shared types and utilities.
-- `MCP-servers/postgres_mcp.py`: (External) Assumed location of the Postgres MCP server script.
-- `mcp-crypto-price`: (External) Node.js package run via `npx`.
+- `agent.py`: LangGraph financial analysis workflow
+- `task_manager.py`: Manages task lifecycle and state
+- `server.py`: FastAPI server for A2A endpoints
+- `__main__.py`: Entry point for running the server
+- `common/`: Shared types and utilities
 
 ## Future Enhancements
 

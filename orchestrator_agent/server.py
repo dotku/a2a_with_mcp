@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 # sys.path.append('/home/anshul/Desktop/A2A/A2A/samples/python')
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Path
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from mcp.server.fastmcp import FastMCP
@@ -118,6 +118,25 @@ server = create_server(host, port)
 
 # Mount the MCP server to the FastAPI app
 app.mount("/mcp", mcp.sse_app())
+
+# Route to handle push callbacks from remote agents
+@app.post("/push/{task_id}")
+async def push_callback(task_id: str = Path(...), request: Request = None):
+    """Handle push callbacks from remote agents"""
+    try:
+        # Parse the request body
+        callback_data = await request.json()
+        logger.info(f"Received push callback for task {task_id}")
+        
+        # Pass the callback data to the task manager
+        await server.task_manager.handle_push_callback(task_id, callback_data)
+        
+        # Return a success response
+        return {"status": "ok"}
+    
+    except Exception as e:
+        logger.error(f"Error handling push callback for task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing push callback: {str(e)}")
 
 # Mount the A2A server to our FastAPI app
 app.mount("/", server.app)

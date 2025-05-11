@@ -111,6 +111,126 @@ Supported A2A methods:
 - `tasks/get` - Get the current state of a task
 - `tasks/cancel` - Cancel a running task
 
+## API Configuration
+
+### Base URL
+- **Default URL**: `http://localhost:10000/`
+- **Environment Variable**: `SENTIMENT_AGENT_PORT` (defaults to 10000)
+- **Usage**: The base URL where the agent API is accessible
+
+### Capabilities
+- **Streaming**: `false` - This agent does not support streaming responses
+- **Push Notifications**: `false` - This agent does not support push notifications
+- **State Transition History**: `true` - This agent maintains task state history
+
+### Supported JSON-RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `tasks/send` | Send a sentiment analysis task to the agent |
+| `tasks/get` | Get information about an existing task |
+| `tasks/cancel` | Cancel a running task |
+
+### Example Payloads
+
+#### Example Request (tasks/send)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-123",
+  "method": "tasks/send",
+  "params": {
+    "id": "task-abc123",
+    "sessionId": "session-456",
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "What's the current sentiment about Bitcoin on Reddit?"
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Example Response (tasks/send)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-123",
+  "result": {
+    "id": "task-abc123",
+    "sessionId": "session-456",
+    "status": {
+      "state": "SUBMITTED",
+      "timestamp": "2023-06-14T18:30:45.123Z"
+    }
+  }
+}
+```
+
+#### Example Response (tasks/get after completion)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-789",
+  "result": {
+    "id": "task-abc123",
+    "sessionId": "session-456",
+    "status": {
+      "state": "COMPLETED",
+      "timestamp": "2023-06-14T18:31:30.456Z",
+      "message": {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "# Bitcoin Sentiment Analysis (from r/Bitcoin)\n\n## Overall Sentiment: Positive\n\n- **Sentiment Score**: 0.65 (on a scale from -1 to 1)\n- **Positive Posts**: 12\n- **Negative Posts**: 3\n- **Neutral Posts**: 5\n- **Total Posts Analyzed**: 20\n\n## Key Topics:\n- Price movement and predictions\n- Institutional adoption\n- Regulatory news\n- Mining activity\n\n## Recent Discussion Topics:\n- \"Bitcoin breaks $60k resistance level\"\n- \"Major bank announces Bitcoin custody service\"\n- \"How mining difficulty changes affect the network\"\n\n## Summary:\nThe Bitcoin community on Reddit is currently showing a positive sentiment with a score of 0.65. Most discussions focus on the recent price increase above $60,000 and growing institutional adoption. There is optimism about sustained growth, though some cautionary posts about potential market volatility exist. Mining discussions are neutral and technical in nature."
+          }
+        ]
+      }
+    },
+    "artifacts": [
+      {
+        "name": "sentiment-analysis",
+        "description": "Bitcoin sentiment analysis results",
+        "parts": [
+          {
+            "type": "text",
+            "text": "# Bitcoin Sentiment Analysis (from r/Bitcoin)\n\n## Overall Sentiment: Positive\n\n- **Sentiment Score**: 0.65 (on a scale from -1 to 1)\n- **Positive Posts**: 12\n- **Negative Posts**: 3\n- **Neutral Posts**: 5\n- **Total Posts Analyzed**: 20\n\n## Key Topics:\n- Price movement and predictions\n- Institutional adoption\n- Regulatory news\n- Mining activity\n\n## Recent Discussion Topics:\n- \"Bitcoin breaks $60k resistance level\"\n- \"Major bank announces Bitcoin custody service\"\n- \"How mining difficulty changes affect the network\"\n\n## Summary:\nThe Bitcoin community on Reddit is currently showing a positive sentiment with a score of 0.65. Most discussions focus on the recent price increase above $60,000 and growing institutional adoption. There is optimism about sustained growth, though some cautionary posts about potential market volatility exist. Mining discussions are neutral and technical in nature."
+          }
+        ]
+      }
+    ],
+    "history": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "What's the current sentiment about Bitcoin on Reddit?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "# Bitcoin Sentiment Analysis (from r/Bitcoin)\n\n## Overall Sentiment: Positive\n\n- **Sentiment Score**: 0.65 (on a scale from -1 to 1)\n- **Positive Posts**: 12\n- **Negative Posts**: 3\n- **Neutral Posts**: 5\n- **Total Posts Analyzed**: 20\n\n## Key Topics:\n- Price movement and predictions\n- Institutional adoption\n- Regulatory news\n- Mining activity\n\n## Recent Discussion Topics:\n- \"Bitcoin breaks $60k resistance level\"\n- \"Major bank announces Bitcoin custody service\"\n- \"How mining difficulty changes affect the network\"\n\n## Summary:\nThe Bitcoin community on Reddit is currently showing a positive sentiment with a score of 0.65. Most discussions focus on the recent price increase above $60,000 and growing institutional adoption. There is optimism about sustained growth, though some cautionary posts about potential market volatility exist. Mining discussions are neutral and technical in nature."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## Troubleshooting
 
 If you encounter any issues:

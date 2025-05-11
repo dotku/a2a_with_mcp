@@ -152,9 +152,20 @@ class ADKHostManager(ApplicationManager):
     final_event: GenAIEvent | None = None
     # Determine if a task is to be resumed.
     session = self._session_service.get_session(
-        app_name='A2A',
-        user_id='test_user',
+        app_name=self.app_name,
+        user_id=self.user_id,
         session_id=conversation_id)
+
+    # Ensure session state is initialized and is a dictionary before appending an event
+    if session: # First, ensure session is not None
+        if not isinstance(session.state, dict):
+            print(f"DEBUG: session.state for session_id {conversation_id} is not a dict (type: {type(session.state)}). Initializing to {{}}")
+            session.state = {}
+    else:
+        print(f"ERROR: Session is None for conversation_id: {conversation_id} in ADKHostManager.process_message")
+        # Potentially raise an error or return early if session is None, 
+        # as further processing will likely fail.
+
     # Update state must happen in the event
     state_update = {
         'input_message_metadata': message.metadata,
@@ -220,6 +231,27 @@ class ADKHostManager(ApplicationManager):
         return
 
   def task_callback(self, task: TaskCallbackArg, agent_card: AgentCard):
+    """Process task updates from remote agents."""
+    print(f"ADKHostManager.task_callback: Received task update: {task} from agent {agent_card.name if agent_card else 'Unknown'}") # DEBUG LOG
+
+    if task is None:
+        print(f"ERROR: ADKHostManager.task_callback: Received None task from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
+        return
+
+    if task.status is None:
+        print(f"ERROR: ADKHostManager.task_callback: Task {task.id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
+        return
+
+    # Check if the task status has a message to attach
+    if task.status.message:
+        print(f"ADKHostManager.task_callback: Attaching message from task {task.id} to UI.") # DEBUG LOG
+        self.attach_message_to_task(task.status.message, task.id)
+    else:
+        print(f"ADKHostManager.task_callback: Task {task.id} status has no message. Status: {task.status.state}") # DEBUG LOG
+
+    # Update task state in our local store
+    print(f"ADKHostManager.task_callback: Updating local task state for {task.id} to {task.status.state}") # DEBUG LOG
+
     self.emit_event(task, agent_card)
     if isinstance(task, TaskStatusUpdateEvent):
       current_task = self.add_or_get_task(task)
@@ -395,13 +427,19 @@ class ADKHostManager(ApplicationManager):
     return rval
 
   def register_agent(self, url):
+    print(f"ADKHostManager: Attempting to register agent with URL: {url}") # DEBUG LOG
     agent_data = get_agent_card(url)
-    if not agent_data.url:
-      agent_data.url = url
-    self._agents.append(agent_data)
-    self._host_agent.register_agent_card(agent_data)
-    # Now update the host agent definition
-    self._initialize_host()
+    if agent_data:
+        print(f"ADKHostManager: Successfully fetched agent card for {agent_data.name if agent_data.name else url}") # DEBUG LOG
+        if not agent_data.url:
+            agent_data.url = url
+        self._agents.append(agent_data)
+        self._host_agent.register_agent_card(agent_data)
+        # Now update the host agent definition
+        self._initialize_host()
+        print(f"ADKHostManager: Agent {agent_data.name if agent_data.name else url} registered and host re-initialized.") # DEBUG LOG
+    else:
+        print(f"ADKHostManager: Failed to fetch agent card for URL: {url}") # DEBUG LOG
 
   @property
   def agents(self) -> list[AgentCard]:

@@ -14,6 +14,7 @@ import threading
 import uvicorn
 from fastapi import FastAPI, Request, Response
 import nest_asyncio
+import prawcore.exceptions
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
@@ -359,16 +360,27 @@ class RedditServer:
             try:
                 iterator = self.client.p.subreddit.pull.new(subreddit_name, limit)
                 for i, subm in enumerate(iterator):
-                    logger.debug(f"Processing post {i+1} from r/{subreddit_name}")
+                    # Log only safe metadata, not the post content
+                    logger.debug(f"Processing post {i+1} from r/{subreddit_name}: ID={subm.id36}, Title='{subm.title[:50]}...' (if longer)")
                     posts.append(self._build_post(subm))
                 logger.info(f"Successfully fetched {len(posts)} new posts from r/{subreddit_name}")
+                
+                # Log safe post summaries (IDs and titles only)
+                if logger.isEnabledFor(logging.DEBUG):
+                    for i, post in enumerate(posts):
+                        logger.debug(f"Post {i+1}/{len(posts)}: ID={post.id}, Title='{post.title[:50]}...' (if longer)")
             except Exception as api_err:
                 # Catch Reddit API specific errors
                 logger.exception(f"Reddit API error for subreddit '{subreddit_name}': {str(api_err)}")
                 # Return empty list instead of raising to avoid breaking the sentiment analysis
                 return []
                 
-            return posts
+            # Limit the number of posts based on the 'limit' argument
+            posts_data = posts[:limit]
+
+            logger.info(f"Method 'get_subreddit_new_posts' for r/{subreddit_name}. Result count: {len(posts_data)}")
+            # Convert each post to a TextContent object containing its JSON representation.
+            return [TextContent(type='text', text=post.model_dump_json()) for post in posts_data]
         except Exception as e:
             logger.exception(f"Error fetching new posts from r/{subreddit_name}: {str(e)}")
             # Return an empty list rather than raising to prevent tool failure
@@ -414,11 +426,18 @@ class RedditServer:
             logger.info(f"Calling redditwarp: client.p.comment_tree.fetch(post_id='{post_id}', limit={limit})")
             tree_node = self.client.p.comment_tree.fetch(post_id, sort='top', limit=limit)
             for i, node in enumerate(tree_node.children):
-                logger.debug(f"Processing comment node {i+1} for post {post_id}")
+                # Avoid logging comment content, just log IDs
+                logger.debug(f"Processing comment node {i+1} for post {post_id}, comment_id={node.value.id36}")
                 comment = self._build_comment_tree(node)
                 if comment:
                     comments.append(comment)
             logger.info(f"Finished fetching {len(comments)} comments for post {post_id}")
+            
+            # Log only comment IDs if debug is enabled
+            if logger.isEnabledFor(logging.DEBUG):
+                for i, comment in enumerate(comments):
+                    logger.debug(f"Comment {i+1}/{len(comments)} for post {post_id}: ID={comment.id}, Author={comment.author}, Length={len(comment.body)} chars")
+            
             return comments
         except Exception as e:
             logger.exception(f"Error fetching comments for post {post_id}")

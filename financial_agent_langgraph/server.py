@@ -62,6 +62,10 @@ try:
 except Exception as e:
     logger.error(f"Failed to set up file logging for server: {e}")
 
+# Define the base URL from environment variables
+BASE_URL = os.getenv("FIN_AGENT_BASE_URL", "http://localhost:8001/")
+logger.info(f"Using base URL: {BASE_URL}")
+
 # Create FastAPI app
 app = FastAPI(title="Financial Analysis Agent")
 
@@ -81,7 +85,7 @@ task_manager = TaskManager()
 agent_card = AgentCard(
     name="Financial Analysis Agent",
     description="Performs financial analysis including valuation metrics, trend analysis, and financial insights.",
-    url="https://financial-agent.example.com",
+    url=BASE_URL,
     provider=AgentProvider(
         organization="Financial Analysts Inc.",
         url="https://financial-analysts.example.com"

@@ -9,6 +9,7 @@ from typing import Dict, Any, Callable, List, Optional, Union, AsyncIterable
 import uuid
 import os
 import sys
+import asyncio
 
 from sentiment_analysis_agent.common.types import (
     Task,
@@ -91,7 +92,7 @@ class SentimentTaskManager:
                 timestamp=timestamp
             ),
             artifacts=None,
-            history=None,
+            history=[message],  # Initialize history with the user message
             metadata=None
         )
         
@@ -105,9 +106,9 @@ class SentimentTaskManager:
                 timestamp=datetime.utcnow().isoformat() + "Z"
             )
             
-            # Call the sentiment agent
+            # Call the sentiment agent in a non-blocking way using asyncio.to_thread
             logger.info(f"Calling sentiment agent with query: {message_text}")
-            response = self.sentiment_agent.invoke(message_text, session_id)
+            response = await asyncio.to_thread(self.sentiment_agent.invoke, message_text, session_id)
             
             # Extract the raw string response
             if hasattr(response, 'raw'):
@@ -126,7 +127,14 @@ class SentimentTaskManager:
                 metadata=None
             )
             
-            # Update the task with completed status and the artifact
+            # Create a response message for history
+            response_message = Message(
+                role="assistant",
+                parts=[TextPart(type="text", text=response_text)],
+                metadata=None
+            )
+            
+            # Update the task with completed status, the artifact, and history
             task.status = TaskStatus(
                 state=TaskState.COMPLETED,
                 message=None,
@@ -134,22 +142,37 @@ class SentimentTaskManager:
             )
             task.artifacts = [artifact]
             
+            # Add the response to history
+            if task.history is None:
+                task.history = [message, response_message]
+            else:
+                task.history.append(response_message)
+            
             logger.info(f"Task {task_id} completed successfully")
             
         except Exception as e:
             logger.error(f"Error processing task {task_id}: {e}")
             logger.error(traceback.format_exc())
             
+            # Create an error message
+            error_message = Message(
+                role="agent",
+                parts=[TextPart(type="text", text=f"Error: {str(e)}")],
+                metadata=None
+            )
+            
             # Update the task with failed status
             task.status = TaskStatus(
                 state=TaskState.FAILED,
-                message=Message(
-                    role="agent",
-                    parts=[TextPart(type="text", text=f"Error: {str(e)}")],
-                    metadata=None
-                ),
+                message=error_message,
                 timestamp=datetime.utcnow().isoformat() + "Z"
             )
+            
+            # Add the error message to history
+            if task.history is None:
+                task.history = [message, error_message]
+            else:
+                task.history.append(error_message)
         
         # Store the updated task
         self.tasks[task_id] = task

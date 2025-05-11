@@ -90,13 +90,17 @@ async def init_mcp_client():
         return filtered_tools
     
     try:
-        logger.info("Initializing MCP client asynchronously...")
+        logger.info("Attempting to initialize MCP client asynchronously...")
         if not os.environ.get("COINCAP_API_KEY"):
             logger.warning("COINCAP_API_KEY environment variable not set. Crypto analysis tools might have limitations or use CoinCap v2 API.")
 
+        logger.debug("Instantiating MultiServerMCPClient...")
         mcp_client = MultiServerMCPClient(MCP_SERVER_CONFIG)
+        logger.debug("MultiServerMCPClient instantiated. Calling __aenter__...")
         await mcp_client.__aenter__()
+        logger.debug("MultiServerMCPClient.__aenter__ completed. Fetching tools...")
         all_fetched_tools = mcp_client.get_tools()
+        logger.debug(f"MCP client get_tools() completed. Raw tools fetched: {[t.name for t in all_fetched_tools]}")
 
         logger.info(f"MCP client initialized with fetched tools: {[t.name for t in all_fetched_tools]}")
 
@@ -169,8 +173,10 @@ async def ensure_mcp_initialized():
     """Ensure MCP client is initialized before processing tasks."""
     global mcp_initialized, model_with_tools, filtered_tools, tool_node
     if not mcp_initialized:
-        logger.info("First-time MCP initialization")
+        logger.info("First-time MCP initialization check: MCP not yet initialized.")
+        logger.debug("Calling init_mcp_client...")
         loaded_and_filtered_tools = await init_mcp_client()
+        logger.debug(f"init_mcp_client returned: {[t.name for t in loaded_and_filtered_tools] if loaded_and_filtered_tools else 'None'}")
         if loaded_and_filtered_tools:
             filtered_tools = loaded_and_filtered_tools
             tool_node = ToolNode(filtered_tools)

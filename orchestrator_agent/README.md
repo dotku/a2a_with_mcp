@@ -55,5 +55,135 @@ The orchestrator uses the following internal tools to delegate tasks:
 
 ## API Endpoints
 
-- `POST /`: Main endpoint expected by the UI or calling application.
-- (Add other relevant endpoints if exposed, e.g., health check). 
+- `POST /`: Main JSON-RPC endpoint for A2A requests.
+- `GET /.well-known/agent.json`: Returns the agent card/manifest.
+- `GET /health`: Health check endpoint.
+- `WebSocket /ws`: WebSocket endpoint for streaming responses.
+- `POST /push/{task_id}`: Endpoint for receiving push notifications from delegated tasks.
+
+## API Configuration
+
+### Base URL
+- **Default URL**: `http://localhost:8000/`
+- **Environment Variable**: Set `HOST` and `PORT` to configure the server address
+- **Usage**: The URL is used by clients to connect to the agent
+
+### Capabilities
+- **Streaming**: `true` - Agent supports real-time streaming of results
+- **Push Notifications**: `true` - Agent supports HTTP callbacks for task updates
+- **State Transition History**: `true` - Agent tracks and provides task state transitions
+
+### Supported JSON-RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `tasks/send` | Send a task to the orchestrator agent |
+| `tasks/get` | Get information about an existing task |
+| `tasks/cancel` | Cancel a running task |
+| `tasks/sendSubscribe` | Create a task and subscribe to updates via WebSocket |
+| `setPushNotificationConfig` | Configure push notifications for a task |
+| `getPushNotificationConfig` | Get the push notification configuration for a task |
+
+### Example Payloads
+
+#### Example Request (tasks/send)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-123",
+  "method": "tasks/send",
+  "params": {
+    "id": "task-123",
+    "sessionId": "session-456",
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Analyze the current sentiment for Bitcoin and provide price trends"
+        }
+      ]
+    },
+    "pushNotification": {
+      "url": "https://your-callback-service.example.com/webhooks",
+      "token": "your-auth-token"
+    }
+  }
+}
+```
+
+#### Example Response (tasks/send)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-123",
+  "result": {
+    "id": "task-123",
+    "sessionId": "session-456",
+    "status": {
+      "state": "SUBMITTED",
+      "timestamp": "2023-06-14T18:30:45.123Z"
+    }
+  }
+}
+```
+
+#### Example Response (tasks/get after completion)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-789",
+  "result": {
+    "id": "task-123",
+    "sessionId": "session-456",
+    "status": {
+      "state": "COMPLETED",
+      "timestamp": "2023-06-14T18:32:30.456Z",
+      "message": {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Based on my analysis of Bitcoin, the current sentiment is generally positive with 65% positive mentions on social media. The price has shown an upward trend of 8.5% over the past week."
+          }
+        ]
+      }
+    },
+    "artifacts": [
+      {
+        "name": "bitcoin-analysis",
+        "description": "Bitcoin sentiment and price analysis",
+        "parts": [
+          {
+            "type": "text",
+            "text": "{ \"sentiment\": \"positive\", \"sentiment_score\": 0.65, \"price_trend\": \"up\", \"price_change_7d\": \"8.5%\" }"
+          }
+        ]
+      }
+    ],
+    "history": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Analyze the current sentiment for Bitcoin and provide price trends"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Based on my analysis of Bitcoin, the current sentiment is generally positive with 65% positive mentions on social media. The price has shown an upward trend of 8.5% over the past week."
+          }
+        ]
+      }
+    ]
+  }
+}
+``` 
