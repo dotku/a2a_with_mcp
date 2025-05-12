@@ -238,45 +238,62 @@ class ADKHostManager(ApplicationManager):
         print(f"ERROR: ADKHostManager.task_callback: Received None task from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
         return
 
-    if task.status is None:
-        print(f"ERROR: ADKHostManager.task_callback: Task {task.id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
-        return
-
-    # Check if the task status has a message to attach
-    if task.status.message:
-        print(f"ADKHostManager.task_callback: Attaching message from task {task.id} to UI.") # DEBUG LOG
-        self.attach_message_to_task(task.status.message, task.id)
-    else:
-        print(f"ADKHostManager.task_callback: Task {task.id} status has no message. Status: {task.status.state}") # DEBUG LOG
-
-    # Update task state in our local store
-    print(f"ADKHostManager.task_callback: Updating local task state for {task.id} to {task.status.state}") # DEBUG LOG
-
-    self.emit_event(task, agent_card)
+    # Handle TaskStatusUpdateEvent
     if isinstance(task, TaskStatusUpdateEvent):
-      current_task = self.add_or_get_task(task)
-      current_task.status = task.status
-      self.attach_message_to_task(task.status.message, current_task.id)
-      self.insert_message_history(current_task, task.status.message)
-      self.update_task(current_task)
-      self.insert_id_trace(task.status.message)
-      return current_task
+        if task.status is None:
+            print(f"ERROR: ADKHostManager.task_callback: TaskStatusUpdateEvent {task.id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
+            return
+        if task.status.message:
+            print(f"ADKHostManager.task_callback: Attaching message from task {task.id} to UI.") # DEBUG LOG
+            self.attach_message_to_task(task.status.message, task.id)
+        else:
+            print(f"ADKHostManager.task_callback: Task {task.id} status has no message. Status: {task.status.state}") # DEBUG LOG
+        print(f"ADKHostManager.task_callback: Updating local task state for {task.id} to {task.status.state}") # DEBUG LOG
+        self.emit_event(task, agent_card)
+        current_task = self.add_or_get_task(task)
+        current_task.status = task.status
+        self.attach_message_to_task(task.status.message, current_task.id)
+        self.insert_message_history(current_task, task.status.message)
+        self.update_task(current_task)
+        self.insert_id_trace(task.status.message)
+        return current_task
+
+    # Handle TaskArtifactUpdateEvent
     elif isinstance(task, TaskArtifactUpdateEvent):
-      current_task = self.add_or_get_task(task)
-      self.process_artifact_event(current_task, task)
-      self.update_task(current_task)
-      return current_task
-    # Otherwise this is a Task, either new or updated
-    elif not any(filter(lambda x: x.id == task.id, self._tasks)):
-      self.attach_message_to_task(task.status.message, task.id)
-      self.insert_id_trace(task.status.message)
-      self.add_task(task)
-      return task
+        print(f"ADKHostManager.task_callback: Received artifact update for task {task.id}") # DEBUG LOG
+        self.emit_event(task, agent_card)
+        current_task = self.add_or_get_task(task)
+        self.process_artifact_event(current_task, task)
+        self.update_task(current_task)
+        return current_task
+
+    # Handle Task (base type)
+    elif hasattr(task, 'status'):
+        if task.status is None:
+            print(f"ERROR: ADKHostManager.task_callback: Task {task.id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
+            return
+        if task.status.message:
+            print(f"ADKHostManager.task_callback: Attaching message from task {task.id} to UI.") # DEBUG LOG
+            self.attach_message_to_task(task.status.message, task.id)
+        else:
+            print(f"ADKHostManager.task_callback: Task {task.id} status has no message. Status: {task.status.state}") # DEBUG LOG
+        print(f"ADKHostManager.task_callback: Updating local task state for {task.id} to {task.status.state}") # DEBUG LOG
+        self.emit_event(task, agent_card)
+        if not any(filter(lambda x: x.id == task.id, self._tasks)):
+            self.attach_message_to_task(task.status.message, task.id)
+            self.insert_id_trace(task.status.message)
+            self.add_task(task)
+            return task
+        else:
+            self.attach_message_to_task(task.status.message, task.id)
+            self.insert_id_trace(task.status.message)
+            self.update_task(task)
+            return task
+
+    # Unknown event type
     else:
-      self.attach_message_to_task(task.status.message, task.id)
-      self.insert_id_trace(task.status.message)
-      self.update_task(task)
-      return task
+        print(f"ERROR: ADKHostManager.task_callback: Received unsupported event type: {type(task)} from agent {agent_card.name if agent_card else 'Unknown'}.")
+        return
 
   def emit_event(self, task: TaskCallbackArg, agent_card: AgentCard):
     content = None
