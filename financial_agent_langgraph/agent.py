@@ -233,7 +233,7 @@ def call_model(state: MessagesState):
     try:
         messages = state["messages"]
         logger.info(f"Calling model with messages: {messages}")
-        system_message = HumanMessage(content="""
+        system_message = HumanMessage(content="""\
 You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools.
 
 Database Tools:
@@ -241,12 +241,11 @@ Database Tools:
   Example: SELECT price_usd FROM crypto_quotes WHERE symbol = 'BTC' ORDER BY timestamp DESC LIMIT 1;
 
 External Crypto Analysis Tools (Use these for market context and history, NOT current price):
-- get-market-analysis: Get detailed market analysis for a specific cryptocurrency, including top exchanges, volume distribution, and VWAP.
-    Input: {{ "symbol": "ETH" }}
-- get-historical-analysis: Get historical price analysis for a specific cryptocurrency with customizable time intervals.
-    Input examples:
-    {{ "symbol": "SOL", "days": 7 }}  # 7 days history, default interval (h1)
-    {{ "symbol": "BTC", "interval": "d1", "days": 30 }} # 30 days history, daily interval
+- get-market-analysis: Use this tool to get detailed market analysis for a specific cryptocurrency, including top exchanges, volume distribution, and VWAP. To call this tool, provide the cryptocurrency symbol as an argument (e.g., for Bitcoin, the argument would be {\\"symbol\\": \\"BTC\\"}).
+- get-historical-analysis: Use this tool to get historical price analysis for a specific cryptocurrency.
+    To use this tool, provide the 'symbol' and optionally 'days' and 'interval'. For example:
+    - To get 7 days of history for Solana (default interval): call with arguments {\\"symbol\\": \\"SOL\\", \\"days\\": 7}
+    - To get 30 days of daily history for Bitcoin: call with arguments {\\"symbol\\": \\"BTC\\", \\"interval\\": \\"d1\\", \\"days\\": 30}
         
         Database schema:
 - crypto_quotes (
@@ -330,12 +329,11 @@ Database Tools:
   Example: SELECT price_usd FROM crypto_quotes WHERE symbol = 'BTC' ORDER BY timestamp DESC LIMIT 1;
 
 External Crypto Analysis Tools (Use these for market context and history, NOT current price):
-- get-market-analysis: Get detailed market analysis for a specific cryptocurrency, including top exchanges, volume distribution, and VWAP.
-    Input: {{ "symbol": "ETH" }}
-- get-historical-analysis: Get historical price analysis for a specific cryptocurrency with customizable time intervals.
-    Input examples:
-    {{ "symbol": "SOL", "days": 7 }}  # 7 days history, default interval (h1)
-    {{ "symbol": "BTC", "interval": "d1", "days": 30 }} # 30 days history, daily interval
+- get-market-analysis: Use this tool to get detailed market analysis for a specific cryptocurrency, including top exchanges, volume distribution, and VWAP. To call this tool, provide the cryptocurrency symbol as an argument (e.g., for Bitcoin, the argument would be {\\"symbol\\": \\"BTC\\"}).
+- get-historical-analysis: Use this tool to get historical price analysis for a specific cryptocurrency.
+    To use this tool, provide the 'symbol' and optionally 'days' and 'interval'. For example:
+    - To get 7 days of history for Solana (default interval): call with arguments {\\"symbol\\": \\"SOL\\", \\"days\\": 7}
+    - To get 30 days of daily history for Bitcoin: call with arguments {\\"symbol\\": \\"BTC\\", \\"interval\\": \\"d1\\", \\"days\\": 30}
         
         Database schema:
 - crypto_quotes (
