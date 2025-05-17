@@ -42,13 +42,7 @@ def fetch(endpoint, params=None):
 
 def setup_tables(cur):
     """Create tables designed to store both current and historical data."""
-    # Drop existing tables to avoid column mismatch
-    cur.execute("""
-    DROP TABLE IF EXISTS crypto_quotes CASCADE;
-    DROP TABLE IF EXISTS crypto_listings CASCADE;
-    DROP TABLE IF EXISTS global_metrics CASCADE;
-    DROP TABLE IF EXISTS price_conversions CASCADE;
-    """)
+    # REMOVED DROP TABLE statements to preserve data on subsequent runs
     
     cur.execute("""
     -- Quotes table with timestamp column for historical data
@@ -98,7 +92,7 @@ def setup_tables(cur):
       PRIMARY KEY (id)
     );
     
-    -- Tables without historical data
+    -- Tables without historical data (these can keep their original definitions if upsert logic is desired elsewhere, but for consistency with history script, making them IF NOT EXISTS)
     CREATE TABLE IF NOT EXISTS id_map (
       symbol TEXT PRIMARY KEY,
       cmc_id INTEGER
