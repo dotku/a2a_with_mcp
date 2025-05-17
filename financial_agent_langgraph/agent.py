@@ -96,10 +96,8 @@ async def init_mcp_client():
 
         logger.debug("Instantiating MultiServerMCPClient...")
         mcp_client = MultiServerMCPClient(MCP_SERVER_CONFIG)
-        logger.debug("MultiServerMCPClient instantiated. Calling __aenter__...")
-        await mcp_client.__aenter__()
-        logger.debug("MultiServerMCPClient.__aenter__ completed. Fetching tools...")
-        all_fetched_tools = mcp_client.get_tools()
+        logger.debug("MultiServerMCPClient instantiated. Fetching tools...")
+        all_fetched_tools = await mcp_client.get_tools()
         logger.debug(f"MCP client get_tools() completed. Raw tools fetched: {[t.name for t in all_fetched_tools]}")
 
         logger.info(f"MCP client initialized with fetched tools: {[t.name for t in all_fetched_tools]}")
@@ -130,7 +128,7 @@ async def cleanup_mcp():
     global mcp_client
     if mcp_client:
         try:
-            await mcp_client.__aexit__(None, None, None)
+            await mcp_client.close()
             logger.info("MCP client shut down")
             mcp_client = None
         except Exception as e:
