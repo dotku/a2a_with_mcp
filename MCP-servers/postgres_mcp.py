@@ -2,9 +2,11 @@ import asyncio
 import asyncpg
 from contextlib import asynccontextmanager
 import os # Import os for environment variables
-
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.stdio import stdio_server
+
+load_dotenv()
 
 # Global pool variable
 default_pool: asyncpg.Pool | None = None
