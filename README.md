@@ -31,30 +31,31 @@ All components communicate via standardized JSON-RPC (A2A) and access data via M
 
 Clone the repository:
 
-git clone https://github.com/anshulLuhsna/a2a_with_mcp.git
-cd a2a_with_mcp
+```git clone https://github.com/anshulLuhsna/a2a_with_mcp.git```
+
+```cd a2a_with_mcp```
 
 Note: Each agent (and each MCP server) has its own requirements.txt. This keeps dependencies lightweight and fully modular.
 
 Install dependencies per component—e.g.:
 
 ### Financial Agent deps
-pip install -r agents/financial/requirements.txt
+```pip install -r agents/financial/requirements.txt```
 
 ### Sentiment Agent deps
-pip install -r agents/sentiment/requirements.txt
+```pip install -r agents/sentiment/requirements.txt```
 
 ### Scraper Agent deps
-pip install -r agents/scraper/requirements.txt
+```pip install -r agents/scraper/requirements.txt```
 
 ### Visualization Agent deps
-pip install -r agents/visualization/requirements.txt
+```pip install -r agents/visualization/requirements.txt```
 
 ### Remote Orchestrator deps
-pip install -r agents/orchestrator/requirements.txt
+```pip install -r agents/orchestrator/requirements.txt```
 
 ### UI dependencies
-pip install -r demo/ui/requirements.txt
+```pip install -r demo/ui/requirements.txt```
 
 (Feel free to create a virtualenv or conda env first.)
 
@@ -62,17 +63,17 @@ pip install -r demo/ui/requirements.txt
 
 Run Agents:
 
-# Manually start each agent, e.g.
-python -m agents.orchestrator
-python -m agents.financial
-python -m agents.sentiment
-python -m agents.scraper
-python -m agents.visualization
+## Manually start each agent, e.g.
+```python -m agents.orchestrator```
+```python -m agents.financial```
+```python -m agents.sentiment```
+```python -m agents.scraper```
+```python -m agents.visualization```
 
 Start the UI:
 
-cd demo/ui
-uv run main.py
+```cd demo/ui```
+```uv run main.py```
 
 Open the UI at http://localhost:8501
 
