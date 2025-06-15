@@ -27,9 +27,7 @@ All components communicate via standardized JSON-RPC (A2A) and access data via M
 
 ---
 
-🚦 Getting Started
-
-🛠️ Installation
+# 🚦 Getting Started
 
 Clone the repository:
 
