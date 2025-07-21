@@ -40,19 +40,19 @@ Note: Each agent (and each MCP server) has its own requirements.txt. This keeps 
 Install dependencies per component—e.g.:
 
 ### Financial Agent deps
-```pip install -r agents/financial/requirements.txt```
+```pip install -r agents/financial_agent/requirements.txt```
 
 ### Sentiment Agent deps
-```pip install -r agents/sentiment/requirements.txt```
+```pip install -r agents/sentiment_agent/requirements.txt```
 
 ### Scraper Agent deps
-```pip install -r agents/scraper/requirements.txt```
+```pip install -r agents/scraper_agent/requirements.txt```
 
 ### Visualization Agent deps
-```pip install -r agents/visualization/requirements.txt```
+```pip install -r agents/visualization_agent/requirements.txt```
 
 ### Remote Orchestrator deps
-```pip install -r agents/orchestrator/requirements.txt```
+```pip install -r agents/orchestrator_agent/requirements.txt```
 
 ### UI dependencies
 ```pip install -r demo/ui/requirements.txt```
