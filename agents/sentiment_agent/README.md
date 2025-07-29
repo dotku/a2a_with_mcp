@@ -25,7 +25,7 @@ You can set environment variables in two ways:
 
 #### Option 1: Using a .env file (recommended)
 
-Create a `.env` file in either the root directory or inside the `sentiment_analysis_agent` directory:
+Create a `.env` file in either the root directory or inside the `sentiment_agent` directory:
 
 ```
 # .env file
@@ -48,14 +48,14 @@ Run the agent server using one of the launcher scripts:
 
 ```bash
 cd ~/Desktop/A2A_with_MCP
-python -m sentiment_analysis_agent.run_agent_server
+python -m agents.sentiment_agent.run_agent_server
 ```
 
 Or alternatively:
 
 ```bash
 cd ~/Desktop/A2A_with_MCP
-python -m sentiment_analysis_agent.start_agent_server
+python -m agents.sentiment_agent.start_agent_server
 ```
 
 The agent server will start on port 10000 by default. You can change this by setting the `SENTIMENT_AGENT_PORT` environment variable either in your .env file or directly in your environment.
@@ -107,6 +107,7 @@ This agent implements the standard A2A protocol with the following endpoints:
 - `/health` - Health check endpoint
 
 Supported A2A methods:
+
 - `tasks/send` - Send a task to the agent
 - `tasks/get` - Get the current state of a task
 - `tasks/cancel` - Cancel a running task
@@ -114,22 +115,24 @@ Supported A2A methods:
 ## API Configuration
 
 ### Base URL
+
 - **Default URL**: `http://localhost:10000/`
 - **Environment Variable**: `SENTIMENT_AGENT_PORT` (defaults to 10000)
 - **Usage**: The base URL where the agent API is accessible
 
 ### Capabilities
+
 - **Streaming**: `false` - This agent does not support streaming responses
 - **Push Notifications**: `false` - This agent does not support push notifications
 - **State Transition History**: `true` - This agent maintains task state history
 
 ### Supported JSON-RPC Methods
 
-| Method | Description |
-|--------|-------------|
-| `tasks/send` | Send a sentiment analysis task to the agent |
-| `tasks/get` | Get information about an existing task |
-| `tasks/cancel` | Cancel a running task |
+| Method         | Description                                 |
+| -------------- | ------------------------------------------- |
+| `tasks/send`   | Send a sentiment analysis task to the agent |
+| `tasks/get`    | Get information about an existing task      |
+| `tasks/cancel` | Cancel a running task                       |
 
 ### Example Payloads
 
@@ -254,4 +257,4 @@ This project consists of:
 4. **MCP Server for Reddit**: A server that provides access to Reddit data
 
 The flow is:
-A2A Request → Server → Task Manager → Agent → MCP Server → Reddit API → Analysis → A2A Response 
+A2A Request → Server → Task Manager → Agent → MCP Server → Reddit API → Analysis → A2A Response

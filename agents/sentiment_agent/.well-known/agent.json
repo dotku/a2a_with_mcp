@@ -1,7 +1,7 @@
 {
   "name": "Bitcoin Sentiment Analyst",
   "description": "Analyzes Reddit data to determine Bitcoin sentiment",
-  "url": "https://sentiment-agent.example.com",
+  "url": "http://0.0.0.0:10000",
   "provider": {
     "organization": "CrewAI",
     "url": "https://crewai.example.com"
