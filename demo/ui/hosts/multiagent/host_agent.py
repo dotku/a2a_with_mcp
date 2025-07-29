@@ -75,24 +75,32 @@ class HostAgent:
 
     def root_instruction(self, context: ReadonlyContext) -> str:
         current_agent = self.check_state(context)
-        return f"""You are an expert delegator that can delegate the user request to the
-appropriate remote agents.
+        return f"""You are an expert delegator that specializes in routing user requests to the appropriate financial analysis agents.
+
+PRIORITY ROUTING:
+- For ANY financial questions, cryptocurrency queries, market analysis, price information, or investment topics: ALWAYS delegate to "Financial Analysis Agent"
+- For simple greetings or general questions: You may respond directly OR delegate to Financial Analysis Agent
+- When in doubt, delegate to Financial Analysis Agent
 
 Discovery:
-- You can use `list_remote_agents` to list the available remote agents you
-can use to delegate the task.
+- You can use `list_remote_agents` to list the available remote agents
+- Always check if "Financial Analysis Agent" is available for financial tasks
 
 Execution:
-- For actionable tasks, you can use `create_task` to assign tasks to remote agents to perform.
-Be sure to include the remote agent name when you respond to the user.
+- Use `send_task` to delegate tasks to remote agents
+- Include the agent name in your response to the user
+- ALWAYS wait for the agent response before replying to the user
 
-You can use `check_pending_task_states` to check the states of the pending
-tasks.
+Error Handling:
+- If a task fails, try to provide a helpful explanation rather than generic error messages
+- If an agent is unavailable, inform the user specifically which service is unavailable
 
-Please rely on tools to address the request, and don't make up the response. If you are not sure, please ask the user for more details.
-Focus on the most recent parts of the conversation primarily.
-
-If there is an active agent, send the request to that agent with the update task tool.
+Financial Analysis Agent handles:
+- Stock prices, cryptocurrency prices
+- Market analysis and trends  
+- Financial statements and ratios
+- Investment recommendations
+- Economic data and indicators
 
 Agents:
 {self.agents}
@@ -148,13 +156,17 @@ Current agent: {current_agent['active_agent']}
           A dictionary of JSON data.
         """
         if agent_name not in self.remote_agent_connections:
-            raise ValueError(f'Agent {agent_name} not found')
+            available_agents = list(self.remote_agent_connections.keys())
+            if available_agents:
+                return f"The '{agent_name}' service is not available. Available services: {', '.join(available_agents)}"
+            else:
+                return "No analysis services are currently available. Please try again later."
         state = tool_context.state
         state['agent'] = agent_name
         card = self.cards[agent_name]
         client = self.remote_agent_connections[agent_name]
         if not client:
-            raise ValueError(f'Client not available for {agent_name}')
+            return f"The {agent_name} service connection is not available. Please try again in a moment."
         if 'task_id' in state:
             taskId = state['task_id']
         else:
@@ -185,16 +197,16 @@ Current agent: {current_agent['active_agent']}
         task = await client.send_task(request, self.task_callback)
         # Add null check before accessing task.status
         if task is None:
-            tool_context.logger.error("Task creation failed - received None task")
+            tool_context.logger.error(f"Task creation failed for {agent_name} - received None task")
             if state:
                 state['session_active'] = False
-            return {"error": "Task creation failed"}
+            return f"I'm unable to connect to the {agent_name} service right now. Please try again in a moment."
 
         if not hasattr(task, 'status') or task.status is None:
-            tool_context.logger.error("Task has no status")
+            tool_context.logger.error(f"Task for {agent_name} has no status")
             if state:
                 state['session_active'] = False
-            return {"error": "Task has invalid status"}
+            return f"The {agent_name} service responded with an invalid status. Please try again."
 
         # Now safe to access task.status.state
         if state:
@@ -206,11 +218,15 @@ Current agent: {current_agent['active_agent']}
             tool_context.actions.skip_summarization = True
             tool_context.actions.escalate = True
         elif task.status.state == TaskState.CANCELED:
-            # Open question, should we return some info for cancellation instead
-            raise ValueError(f'Agent {agent_name} task {task.id} is cancelled')
+            return f"The request to {agent_name} was canceled. Please try submitting your request again."
         elif task.status.state == TaskState.FAILED:
-            # Raise error for failure
-            raise ValueError(f'Agent {agent_name} task {task.id} failed')
+            error_msg = f"The {agent_name} service encountered an error while processing your request."
+            if task.status.message and task.status.message.parts:
+                for part in task.status.message.parts:
+                    if hasattr(part, 'text') and part.text:
+                        error_msg += f" Details: {part.text}"
+                        break
+            return error_msg
         response = []
         if task.status.message:
             # Assume the information is in the task message.

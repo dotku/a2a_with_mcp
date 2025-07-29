@@ -2,7 +2,79 @@
 
 This repository demonstrates a practical, real-world implementation of Google's **Agent-to-Agent (A2A)** protocol combined with Anthropic's **Model Context Protocol (MCP)**. Together, these open standards enable seamless interoperability between modular AI agents.
 
----
+## Architecture
+
+```mermaid
+flowchart TD
+    UI["Web UI (demo/ui)"]
+    HostAgent["Host Agent / Orchestrator<br/>(port 12000)"]
+    OrchestratorAgent["Orchestrator Agent<br/>(port 8000)"]
+    RemoteAgent1["Financial Agent<br/>(port 8001)"]
+    RemoteAgent2["Sentiment Agent<br/>(port 8002)"]
+    RemoteAgent3["Scraper Agent<br/>(port 8003)"]
+    RemoteAgent4["Visualization Agent<br/>(port 8004)"]
+    PostgresMCP["Postgres MCP Server<br/>(port 5432 or as configured)"]
+    CryptoMCP["Crypto Price MCP Server<br/>(port 9000 or as configured)"]
+    RedditMCP["Reddit MCP Server<br/>(port 7000 or as configured)"]
+    WebScraperMCP["Web Scraper MCP Server<br/>(port 8500 or as configured)"]
+
+    UI -- "HTTP API (frontend)" --> HostAgent
+    HostAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent1
+    HostAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent2
+    HostAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent3
+    HostAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent4
+    HostAgent -. "discovery (A2A)" .-> RemoteAgent1
+    HostAgent -. "discovery (A2A)" .-> RemoteAgent2
+    HostAgent -. "discovery (A2A)" .-> RemoteAgent3
+    HostAgent -. "discovery (A2A)" .-> RemoteAgent4
+
+    OrchestratorAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent1
+    OrchestratorAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent2
+    OrchestratorAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent3
+    OrchestratorAgent -- "JSON-RPC (A2A, HTTP)" --> RemoteAgent4
+    OrchestratorAgent -. "discovery (A2A)" .-> RemoteAgent1
+    OrchestratorAgent -. "discovery (A2A)" .-> RemoteAgent2
+    OrchestratorAgent -. "discovery (A2A)" .-> RemoteAgent3
+    OrchestratorAgent -. "discovery (A2A)" .-> RemoteAgent4
+
+    RemoteAgent1 -- "SQL/HTTP" --> PostgresMCP
+    RemoteAgent1 -- "HTTP" --> CryptoMCP
+
+    RemoteAgent2 -- "HTTP" --> RedditMCP
+    RemoteAgent3 -- "HTTP" --> WebScraperMCP
+
+    subgraph Specialized Agents [Specialized Remote Agents]
+      RemoteAgent1
+      RemoteAgent2
+      RemoteAgent3
+      RemoteAgent4
+    end
+    subgraph MCP Servers [MCP Data Source Servers]
+      PostgresMCP
+      CryptoMCP
+      RedditMCP
+      WebScraperMCP
+    end
+```
+
+**Port Reference Table**
+
+| Component             | Default Port | Notes                                  |
+|-----------------------|-------------|----------------------------------------|
+| Web UI (demo/ui)      | (N/A)       | Runs in browser, connects to HostAgent |
+| Host Agent            | 12000       | Main orchestrator for UI               |
+| Orchestrator Agent    | 8000        | Generic A2A orchestrator, API testing  |
+| Financial Agent       | 8001        |                                        |
+| Sentiment Agent       | 8002        | Example; adjust as configured          |
+| Scraper Agent         | 8003        | Example; adjust as configured          |
+| Visualization Agent   | 8004        | Example; adjust as configured          |
+| Postgres MCP Server   | 5432        | Standard Postgres port (can vary)      |
+| Crypto Price MCP      | 9000        | Example; adjust as configured          |
+| Reddit MCP            | 7000        | Example; adjust as configured          |
+| Web Scraper MCP       | 8500        | Example; adjust as configured          |
+
+- The Host Agent and Orchestrator Agent both orchestrate flows, but the Host Agent integrates with the UI, while Orchestrator Agent can be used for API-first or direct A2A agent chaining/testing.
+- MCP servers supply data to the Financial, Sentiment, and other Remote Agents.
 
 ## 🌟 What Does This Project Do?
 
