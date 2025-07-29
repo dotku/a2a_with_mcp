@@ -57,7 +57,7 @@ flowchart TD
     end
 ```
 
-**Port Reference Table**
+### Port Reference Table
 
 | Component             | Default Port | Notes                                  |
 |-----------------------|-------------|----------------------------------------|
@@ -66,7 +66,7 @@ flowchart TD
 | Orchestrator Agent    | 8000        | Generic A2A orchestrator, API testing  |
 | Financial Agent       | 8001        |                                        |
 | Sentiment Agent       | 8002        | Example; adjust as configured          |
-| Scraper Agent         | 8003        | Example; adjust as configured          |
+| Scraper Agent         |             | Example; adjust as configured          |
 | Visualization Agent   | 8004        | Example; adjust as configured          |
 | Postgres MCP Server   | 5432        | Standard Postgres port (can vary)      |
 | Crypto Price MCP      | 9000        | Example; adjust as configured          |
