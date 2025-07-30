@@ -23,15 +23,29 @@ print("================================")
 try:
     # Attempt connection with SSL mode for Supabase
     print("\nAttempting to connect...")
-    conn = psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
-        sslmode="disable",  # Required for Supabase
-        gssencmode="disable",  # Disable GSSAPI for Supabase
-    )
+    if "supabase.com" in DB_HOST or "localhost" not in DB_HOST:
+        print("suapbase")
+        # For Supabase or external hosts, use SSL
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+            sslmode="require",
+        )
+        print("✅ Connected successfully with SSL")
+    else:
+        print("localhost")
+        # For localhost, don't specify sslmode
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+        )
+        print("✅ Connected successfully (localhost)")
 
     print("✅ Connection successful!")
 
