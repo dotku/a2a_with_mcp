@@ -65,10 +65,15 @@ class Message(BaseModel):
 class TaskStatus(BaseModel):
     state: TaskState
     message: Message | None = None
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime | str | float = Field(default_factory=datetime.now)
 
     @field_serializer("timestamp")
-    def serialize_dt(self, dt: datetime, _info):
+    def serialize_dt(self, dt: datetime | str | float, _info):
+        if isinstance(dt, str):
+            return dt
+        elif isinstance(dt, float):
+            # Convert Unix timestamp to ISO format
+            return datetime.fromtimestamp(dt).isoformat()
         return dt.isoformat()
 
 

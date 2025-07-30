@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 from common.types import Message, Task, AgentCard
 from service.types import Conversation, Event
 
@@ -7,6 +8,10 @@ class ApplicationManager(ABC):
   @abstractmethod
   def create_conversation(self) -> Conversation:
     pass
+
+  @abstractmethod
+  def get_conversation(self, conversation_id: Optional[str]) -> Optional[Conversation]:
+    pass 
 
   @abstractmethod
   def sanitize_message(self, message: Message) -> Message:

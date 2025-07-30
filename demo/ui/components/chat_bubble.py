@@ -3,7 +3,6 @@ import mesop as me
 from state.state import StateMessage
 from state.state import AppState
 
-
 @me.component
 def chat_bubble(message: StateMessage, key: str):
     """Chat bubble component"""
@@ -12,8 +11,11 @@ def chat_bubble(message: StateMessage, key: str):
         message.message_id in app_state.background_tasks
         or message.message_id in app_state.message_aliases.values()
     )
+    print(f"app_state.background_tasks: {app_state.background_tasks}")
+    print(f"app_state.message_aliases: {app_state.message_aliases}")
     progress_text = ""
     if show_progress_bar:
+      print(f"Message ID {message.message_id} is in background tasks or aliases")
       progress_text = app_state.background_tasks[message.message_id]
     if not message.content:
       print("No message content")

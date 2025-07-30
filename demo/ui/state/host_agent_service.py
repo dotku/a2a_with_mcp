@@ -39,6 +39,7 @@ async def ListConversations() -> list[Conversation]:
     return response.result
   except Exception as e:
     print("Failed to list conversations: ", e)
+    return []
 
 async def SendMessage(message: Message) -> str | None:
   client = ConversationClient(server_url)
@@ -47,14 +48,18 @@ async def SendMessage(message: Message) -> str | None:
     return response.result
   except Exception as e:
     print("Failed to send message: ", e)
+    return None
 
-async def CreateConversation() -> Conversation:
+async def CreateConversation() -> Conversation | None:
   client = ConversationClient(server_url)
   try:
    response = await client.create_conversation(CreateConversationRequest())
    return response.result
   except Exception as e:
     print("Failed to create conversation", e)
+    import traceback
+    traceback.print_exc()
+    return None
 
 async def ListRemoteAgents():
   client = ConversationClient(server_url)
@@ -63,6 +68,7 @@ async def ListRemoteAgents():
     return response.result
   except Exception as e:
     print("Failed to read agents", e)
+    return []
 
 async def AddRemoteAgent(path: str):
   client = ConversationClient(server_url)
@@ -78,6 +84,7 @@ async def GetEvents() -> list[Event]:
     return response.result
   except Exception as e:
     print("Failed to get events", e)
+    return []
 
 async def GetProcessingMessages():
   client = ConversationClient(server_url)
@@ -86,6 +93,7 @@ async def GetProcessingMessages():
     return dict(response.result)
   except Exception as e:
     print("Error getting pending messages", e)
+    return {}
 
 def GetMessageAliases():
   return {}
@@ -97,6 +105,7 @@ async def GetTasks():
     return response.result
   except Exception as e:
     print("Failed to list tasks ", e)
+    return []
 
 async def ListMessages(conversation_id: str) -> list[Message]:
   client = ConversationClient(server_url)
@@ -105,6 +114,7 @@ async def ListMessages(conversation_id: str) -> list[Message]:
     return response.result
   except Exception as e:
     print("Failed to list messages ", e)
+    return []
 
 
 async def UpdateAppState(state: AppState, conversation_id: str):

@@ -2,6 +2,9 @@ import asyncio
 import datetime
 import json
 import os
+import logging 
+import httpx
+
 from typing import Tuple, Optional, Any
 import uuid
 from service.types import Conversation, Event
@@ -11,8 +14,6 @@ from common.types import (
     TextPart,
     TaskState,
     TaskStatus,
-    TaskStatusUpdateEvent,
-    TaskArtifactUpdateEvent,
     Artifact,
     AgentCard,
     DataPart,
@@ -20,6 +21,13 @@ from common.types import (
     FileContent,
     Part,
 )
+
+# Import the correct A2A event types
+try:
+    from a2a.types import TaskStatusUpdateEvent, TaskArtifactUpdateEvent
+except ImportError:
+    # Fallback to common.types if a2a.types is not available
+    from common.types import TaskStatusUpdateEvent, TaskArtifactUpdateEvent
 from hosts.multiagent.host_agent import HostAgent
 from hosts.multiagent.remote_agent_connection import (
     TaskCallbackArg,
@@ -34,6 +42,12 @@ from google.adk.events.event import Event as ADKEvent
 from google.adk.events.event_actions import EventActions as ADKEventActions
 from google.genai import types
 import base64
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class ADKHostManager(ApplicationManager):
@@ -62,7 +76,8 @@ class ADKHostManager(ApplicationManager):
     self._session_service = InMemorySessionService()
     self._artifact_service = InMemoryArtifactService()
     self._memory_service = InMemoryMemoryService()
-    self._host_agent = HostAgent([], self.task_callback)
+    self._http_client = httpx.AsyncClient()
+    self._host_agent = HostAgent([], self._http_client, self.task_callback)
     self.user_id = "test_user"
     self.app_name = "A2A"
     self.api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
@@ -106,10 +121,45 @@ class ADKHostManager(ApplicationManager):
     )
 
   def create_conversation(self) -> Conversation:
-    session = self._session_service.create_session(
-        app_name=self.app_name,
-        user_id=self.user_id)
-    conversation_id = session.id
+    print("create_conversation")
+    conversation_id = None
+    
+    try:
+        # Try to create a proper session using asyncio
+        import asyncio
+        
+        # Check if we're in an async context
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context, but we can't await here since this is a sync method
+            # Use the fallback approach
+            conversation_id = str(uuid.uuid4())
+            logger.warning(f"Using fallback conversation ID due to running event loop: {conversation_id}")
+        except RuntimeError:
+            # No event loop running, we can create one
+            try:
+                session = asyncio.run(self._session_service.create_session(
+                    app_name=self.app_name,
+                    user_id=self.user_id))
+                print(f"Session object type: {type(session)}")
+                print(f"Session object: {session}")
+                print(f"Successfully created session with ID: {session.id}")
+                conversation_id = session.id
+            except Exception as e:
+                logger.error(f"Error running async session creation: {e}")
+                conversation_id = str(uuid.uuid4())
+                logger.warning(f"Using fallback conversation ID after async error: {conversation_id}")
+                
+    except Exception as e:
+        logger.error(f"Error creating session: {e}")
+        # Generate a fallback conversation ID if session creation fails
+        conversation_id = str(uuid.uuid4())
+        logger.warning(f"Using fallback conversation ID: {conversation_id}")
+    
+    if not conversation_id:
+        conversation_id = str(uuid.uuid4())
+        logger.warning(f"Using final fallback conversation ID: {conversation_id}")
+    
     c = Conversation(conversation_id=conversation_id, is_active=True)
     self._conversations.append(c)
     return c
@@ -130,6 +180,10 @@ class ADKHostManager(ApplicationManager):
     return message
 
   async def process_message(self, message: Message):
+    print(f"ADKHostManager: Processing message: {message.parts[0].text if message.parts and hasattr(message.parts[0], 'text') else 'No text content'}")
+    print(f"ADKHostManager: Message role: {message.role}")
+    print(f"ADKHostManager: Registered agents: {[agent.name for agent in self._agents]}")
+    
     self._messages.append(message)
     message_id = get_message_id(message)
     if message_id:
@@ -149,12 +203,25 @@ class ADKHostManager(ApplicationManager):
         content=message,
         timestamp=datetime.datetime.utcnow().timestamp(),
     ))
-    final_event: GenAIEvent | None = None
+    final_event: Event | None = None
     # Determine if a task is to be resumed.
-    session = self._session_service.get_session(
+    logger.debug(f"Session service type: {type(self._session_service)}")
+    
+    # Try to get existing session, if not found, create one
+    session = await self._session_service.get_session(
         app_name=self.app_name,
         user_id=self.user_id,
         session_id=conversation_id)
+    
+    if not session:
+        logger.warning(f"Session not found for conversation_id: {conversation_id}, creating new session")
+        session = await self._session_service.create_session(
+            app_name=self.app_name,
+            user_id=self.user_id,
+            session_id=conversation_id)
+        logger.debug(f"Created new session with ID: {session.id}")
+    
+    logger.debug(f"Session result type: {type(session)}")
 
     # Ensure session state is initialized and is a dictionary before appending an event
     if session: # First, ensure session is not None
@@ -162,9 +229,10 @@ class ADKHostManager(ApplicationManager):
             print(f"DEBUG: session.state for session_id {conversation_id} is not a dict (type: {type(session.state)}). Initializing to {{}}")
             session.state = {}
     else:
-        print(f"ERROR: Session is None for conversation_id: {conversation_id} in ADKHostManager.process_message")
+        logger.error(f"ERROR: Session is None for conversation_id: {conversation_id} in ADKHostManager.process_message")
         # Potentially raise an error or return early if session is None, 
         # as further processing will likely fail.
+        return
 
     # Update state must happen in the event
     state_update = {
@@ -181,24 +249,45 @@ class ADKHostManager(ApplicationManager):
             None))):
           state_update['task_id'] = self._task_map[last_message_id]
     # Need to upsert session state now, only way is to append an event.
-    self._session_service.append_event(session, ADKEvent(
+    await self._session_service.append_event(session, ADKEvent(
         id=ADKEvent.new_id(),
         author="host_agent",
         invocation_id=ADKEvent.new_id(),
         actions=ADKEventActions(state_delta=state_update),
     ))
-    async for event in self._host_runner.run_async(
-        user_id=self.user_id,
-        session_id=conversation_id,
-        new_message=self.adk_content_from_message(message)
-    ):
-      self.add_event(Event(
-          id=event.id,
-          actor=event.author,
-          content=self.adk_content_to_message(event.content, conversation_id),
-          timestamp=event.timestamp,
-      ))
-      final_event = event
+    
+    print(f"ADKHostManager: About to call host runner with session_id: {conversation_id}")
+    final_event = None
+    event_count = 0
+    try:
+        async for event in self._host_runner.run_async(
+            user_id=self.user_id,
+            session_id=conversation_id,
+            new_message=self.adk_content_from_message(message)
+        ):
+          event_count += 1
+          print(f"ADKHostManager: Received event #{event_count} from host runner: {event.id}, author: {event.author}")
+          if hasattr(event, 'content') and event.content:
+              print(f"ADKHostManager: Event content preview: {str(event.content)[:200]}...")
+          self.add_event(Event(
+              id=event.id,
+              actor=event.author,
+              content=self.adk_content_to_message(event.content, conversation_id),
+              timestamp=event.timestamp,
+          ))
+          final_event = event
+        
+        print(f"ADKHostManager: Host runner completed, received {event_count} events")
+        if event_count == 0:
+            print(f"ADKHostManager: WARNING - No events received from host runner")
+            
+    except Exception as e:
+        print(f"ADKHostManager: Error in host runner: {e}")
+        import traceback
+        traceback.print_exc()
+        # Create a fallback response
+        final_event = None
+    
     response: Message | None = None
     if final_event:
       final_event.content.role = 'model'
@@ -216,39 +305,74 @@ class ADKHostManager(ApplicationManager):
              'message_id': new_message_id}
       }
       self._messages.append(response)
+    else:
+      print(f"ADKHostManager: No final event received, creating fallback response")
+      # Create a more specific fallback response when no event is received
+      response = Message(
+          parts=[TextPart(text="I'm currently unable to process your request. The analysis service may be starting up or temporarily unavailable. Please try again in a moment.")],
+          role="agent",
+          metadata={
+              **message.metadata,
+              'message_id': str(uuid.uuid4()),
+              'last_message_id': get_message_id(message)
+          }
+      )
+      self._messages.append(response)
 
-    if conversation:
+    if conversation and response:
       conversation.messages.append(response)
-    self._pending_message_ids.remove(message_id)
+    
+    if message_id and message_id in self._pending_message_ids:
+        self._pending_message_ids.remove(message_id)
 
   def add_task(self, task: Task):
+    print(f"DEBUG: Adding task of type {type(task)} with id {getattr(task, 'id', 'unknown')}")
     self._tasks.append(task)
 
   def update_task(self, task: Task):
+    print(f"DEBUG: Updating task of type {type(task)} with id {getattr(task, 'id', 'unknown')}")
     for i, t in enumerate(self._tasks):
       if t.id == task.id:
         self._tasks[i] = task
+        print(f"DEBUG: Updated task at index {i}")
         return
+    print(f"DEBUG: Task {getattr(task, 'id', 'unknown')} not found for update")
+
+  def _get_task_id(self, task: TaskCallbackArg) -> str:
+    """Get the task ID from various task types."""
+    if hasattr(task, 'task_id'):
+        return task.task_id
+    elif hasattr(task, 'id'):
+        return task.id
+    else:
+        return 'unknown'
 
   def task_callback(self, task: TaskCallbackArg, agent_card: AgentCard):
     """Process task updates from remote agents."""
     print(f"ADKHostManager.task_callback: Received task update: {task} from agent {agent_card.name if agent_card else 'Unknown'}") # DEBUG LOG
+    print(f"DEBUG: Task type: {type(task)}")
+    print(f"DEBUG: Task type module: {type(task).__module__}")
+    print(f"DEBUG: TaskStatusUpdateEvent module: {TaskStatusUpdateEvent.__module__}")
+    print(f"DEBUG: isinstance check: {isinstance(task, TaskStatusUpdateEvent)}")
 
     if task is None:
         print(f"ERROR: ADKHostManager.task_callback: Received None task from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
         return
 
+    task_id = self._get_task_id(task)
+
     # Handle TaskStatusUpdateEvent
     if isinstance(task, TaskStatusUpdateEvent):
+        print(f"DEBUG: Handling TaskStatusUpdateEvent {task_id}")
         if task.status is None:
-            print(f"ERROR: ADKHostManager.task_callback: TaskStatusUpdateEvent {task.id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
+            print(f"ERROR: ADKHostManager.task_callback: TaskStatusUpdateEvent {task_id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
             return
         if task.status.message:
-            print(f"ADKHostManager.task_callback: Attaching message from task {task.id} to UI.") # DEBUG LOG
-            self.attach_message_to_task(task.status.message, task.id)
+            print(f"ADKHostManager.task_callback: Attaching message from task {task_id} to UI.") # DEBUG LOG
+            self.attach_message_to_task(task.status.message, task_id)
         else:
-            print(f"ADKHostManager.task_callback: Task {task.id} status has no message. Status: {task.status.state}") # DEBUG LOG
-        print(f"ADKHostManager.task_callback: Updating local task state for {task.id} to {task.status.state}") # DEBUG LOG
+            print(f"ADKHostManager.task_callback: Task {task_id} status has no message. Status: {task.status.state}") # DEBUG LOG
+        print(f"ADKHostManager.task_callback: Updating local task state for {task_id} to {task.status.state}") # DEBUG LOG
         self.emit_event(task, agent_card)
         current_task = self.add_or_get_task(task)
         current_task.status = task.status
@@ -260,38 +384,40 @@ class ADKHostManager(ApplicationManager):
 
     # Handle TaskArtifactUpdateEvent
     elif isinstance(task, TaskArtifactUpdateEvent):
-        print(f"ADKHostManager.task_callback: Received artifact update for task {task.id}") # DEBUG LOG
+        print(f"ADKHostManager.task_callback: Received artifact update for task {task_id}") # DEBUG LOG
         self.emit_event(task, agent_card)
         current_task = self.add_or_get_task(task)
         self.process_artifact_event(current_task, task)
         self.update_task(current_task)
         return current_task
 
-    # Handle Task (base type)
-    elif hasattr(task, 'status'):
+    # Handle Task (base type) - but not event types
+    elif hasattr(task, 'status') and not isinstance(task, (TaskStatusUpdateEvent, TaskArtifactUpdateEvent)):
+        print(f"DEBUG: Handling base Task {task_id}")
         if task.status is None:
-            print(f"ERROR: ADKHostManager.task_callback: Task {task.id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
+            print(f"ERROR: ADKHostManager.task_callback: Task {task_id} has no status from agent {agent_card.name if agent_card else 'Unknown'}. Skipping message attachment.")
             return
         if task.status.message:
-            print(f"ADKHostManager.task_callback: Attaching message from task {task.id} to UI.") # DEBUG LOG
-            self.attach_message_to_task(task.status.message, task.id)
+            print(f"ADKHostManager.task_callback: Attaching message from task {task_id} to UI.") # DEBUG LOG
+            self.attach_message_to_task(task.status.message, task_id)
         else:
-            print(f"ADKHostManager.task_callback: Task {task.id} status has no message. Status: {task.status.state}") # DEBUG LOG
-        print(f"ADKHostManager.task_callback: Updating local task state for {task.id} to {task.status.state}") # DEBUG LOG
+            print(f"ADKHostManager.task_callback: Task {task_id} status has no message. Status: {task.status.state}") # DEBUG LOG
+        print(f"ADKHostManager.task_callback: Updating local task state for {task_id} to {task.status.state}") # DEBUG LOG
         self.emit_event(task, agent_card)
-        if not any(filter(lambda x: x.id == task.id, self._tasks)):
-            self.attach_message_to_task(task.status.message, task.id)
+        if not any(filter(lambda x: x.id == task_id, self._tasks)):
+            self.attach_message_to_task(task.status.message, task_id)
             self.insert_id_trace(task.status.message)
             self.add_task(task)
             return task
         else:
-            self.attach_message_to_task(task.status.message, task.id)
+            self.attach_message_to_task(task.status.message, task_id)
             self.insert_id_trace(task.status.message)
             self.update_task(task)
             return task
 
     # Unknown event type
     else:
+        print(f"DEBUG: Unknown event type: {type(task)} from agent {agent_card.name if agent_card else 'Unknown'}.")
         print(f"ERROR: ADKHostManager.task_callback: Received unsupported event type: {type(task)} from agent {agent_card.name if agent_card else 'Unknown'}.")
         return
 
@@ -319,7 +445,7 @@ class ADKHostManager(ApplicationManager):
       return
     elif task.status and task.status.message:
       content = task.status.message
-    elif task.artifacts:
+    elif hasattr(task, 'artifacts') and task.artifacts:
       parts = []
       for a in task.artifacts:
         parts.extend(a.parts)
@@ -369,15 +495,34 @@ class ADKHostManager(ApplicationManager):
       print("Message id already in history", get_message_id(task.status.message), task.history)
 
   def add_or_get_task(self, task: TaskCallbackArg):
-    current_task = next(filter(lambda x: x.id == task.id, self._tasks), None)
+    task_id = self._get_task_id(task)
+    current_task = next(filter(lambda x: x.id == task_id, self._tasks), None)
     if not current_task:
       conversation_id = None
       if task.metadata and 'conversation_id' in task.metadata:
         conversation_id = task.metadata['conversation_id']
+      else:
+        # Try to find conversation_id from the current processing message
+        # Look for any recent message that might be associated with this task
+        for msg_id, task_mapped_id in self._task_map.items():
+          if task_mapped_id == task_id:
+            # Find the message with this ID
+            for msg in self._messages:
+              if get_message_id(msg) == msg_id and msg.metadata and 'conversation_id' in msg.metadata:
+                conversation_id = msg.metadata['conversation_id']
+                print(f"ADKHostManager: Found conversation_id {conversation_id} for task {task_id} via message mapping")
+                break
+            break
+      
+      # Ensure task metadata includes conversation_id
+      task_metadata = task.metadata.copy() if task.metadata else {}
+      if conversation_id and 'conversation_id' not in task_metadata:
+        task_metadata['conversation_id'] = conversation_id
+
       current_task = Task(
-          id=task.id,
+          id=task_id,
           status=TaskStatus(state = TaskState.SUBMITTED), #initialize with submitted
-          metadata=task.metadata,
+          metadata=task_metadata,
           artifacts = [],
           sessionId=conversation_id,
       )
@@ -468,6 +613,18 @@ class ADKHostManager(ApplicationManager):
 
   @property
   def tasks(self) -> list[Task]:
+    # Filter out any TaskStatusUpdateEvent or TaskArtifactUpdateEvent objects that shouldn't be here
+    valid_tasks = []
+    for task in self._tasks:
+      if isinstance(task, (TaskStatusUpdateEvent, TaskArtifactUpdateEvent)):
+        continue
+      else:
+        valid_tasks.append(task)
+    
+    if len(valid_tasks) != len(self._tasks):
+      print(f"DEBUG: Cleaned tasks list from {len(self._tasks)} to {len(valid_tasks)} items")
+      self._tasks = valid_tasks
+    
     return self._tasks
 
   @property
@@ -488,11 +645,11 @@ class ADKHostManager(ApplicationManager):
               file_uri=part.uri,
               mime_type=part.mimeType
           ))
-        elif content_part.bytes:
-          parts.append(types.Part.from_bytes(
-              data=part.bytes.encode('utf-8'),
-              mime_type=part.mimeType)
-          )
+        # elif content_part.bytes:
+        #   parts.append(types.Part.from_bytes(
+        #       data=part.bytes.encode('utf-8'),
+        #       mime_type=part.mimeType)
+        #   )
         else:
           raise ValueError("Unsupported message type")
     return types.Content(parts=parts, role=message.role)

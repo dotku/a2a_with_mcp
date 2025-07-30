@@ -12,10 +12,24 @@ load_dotenv()
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+async def init_mcp_before_server():
+    """Initialize MCP client before starting the server."""
+    logger.info("Pre-initializing MCP client before server startup...")
+    try:
+        from agents.financial_agent.agent import ensure_mcp_initialized
+        await ensure_mcp_initialized()
+        logger.info("MCP client successfully pre-initialized")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to pre-initialize MCP client: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 def main():
     """
@@ -27,6 +41,15 @@ def main():
     # Log server startup
     logger.info(f"Starting Financial Agent server on port {port}")
     
+    # Pre-initialize MCP client before starting server
+    logger.info("Phase 1: Pre-initializing MCP client...")
+    mcp_success = asyncio.run(init_mcp_before_server())
+    
+    if not mcp_success:
+        logger.error("MCP pre-initialization failed. Server may not function properly.")
+        # Continue anyway - the server can still start without MCP
+    
+    logger.info("Phase 2: Starting FastAPI server...")
     # Run the server using uvicorn with absolute import path
     uvicorn.run(
         "agents.financial_agent.server:app",

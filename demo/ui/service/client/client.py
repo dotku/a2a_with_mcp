@@ -73,3 +73,13 @@ class ConversationClient:
   async def list_agents(self, payload: ListAgentRequest) -> ListAgentResponse:
     return ListAgentResponse(**await self._send_request(payload))
 
+  async def stream_events(self) -> AsyncIterable[dict[str, Any]]:
+    """Stream events using Server-Sent Events"""
+    async with httpx.AsyncClient() as client:
+      async with connect_sse(client, "GET", f"{self.base_url}/events/stream") as event_source:
+        async for sse in event_source.aiter_sse():
+          try:
+            yield json.loads(sse.data)
+          except json.JSONDecodeError:
+            continue
+

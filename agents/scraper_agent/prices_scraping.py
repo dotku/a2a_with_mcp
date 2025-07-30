@@ -39,6 +39,7 @@ def fetch(endpoint, params=None):
 
 def ensure_tables(cur):
     """Create tables if they don't exist."""
+    print("Ensuring tables exist...")
     cur.execute("""
     CREATE TABLE IF NOT EXISTS crypto_quotes (
       symbol TEXT PRIMARY KEY,

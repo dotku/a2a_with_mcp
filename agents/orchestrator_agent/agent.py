@@ -25,6 +25,11 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # Process request function for A2A
@@ -77,6 +82,7 @@ class OrchestratorAgent:
             # URLs for specialized agents - Update financial_data URL
             self.agent_urls = {
                 "financial_data": "http://localhost:8001", # Updated port
+                "financial_data_ws": "ws://localhost:8001/ws",
                 "sentiment_analysis": "http://localhost:10000",
                 "competitor_analysis": "http://localhost:8003",
                 "visualization": "http://localhost:8004",
@@ -92,6 +98,9 @@ class OrchestratorAgent:
         """
         Invoke the agent synchronously.
         """
+        logger.info(f"[ORCHESTRATOR DEBUG] ======== ORCHESTRATOR INVOKED ========")
+        logger.info(f"[ORCHESTRATOR DEBUG] Query: {query}")
+        logger.info(f"[ORCHESTRATOR DEBUG] Session ID: {session_id}")
         try:
             session = self._runner.session_service.get_session(
                 app_name=self._agent.name, user_id=self._user_id, session_id=session_id
@@ -121,6 +130,9 @@ class OrchestratorAgent:
         """
         Invoke the agent with streaming responses.
         """
+        logger.info(f"[ORCHESTRATOR DEBUG] ======== ORCHESTRATOR STREAM INVOKED ========")
+        logger.info(f"[ORCHESTRATOR DEBUG] Query: {query}")
+        logger.info(f"[ORCHESTRATOR DEBUG] Session ID: {session_id}")
         try:
             # Yield an initial update to ensure the stream starts immediately
             yield {
@@ -344,7 +356,8 @@ class OrchestratorAgent:
         else:
             final_input = json.dumps({"query": "Request from Orchestrator"})
             
-        logger.info(f"Calling specialized agent with input: {final_input[:100]}...")
+        logger.info(f"[ORCHESTRATOR DEBUG] Calling {agent_name} agent at {agent_url}")
+        logger.info(f"[ORCHESTRATOR DEBUG] Input: {final_input}")
         
         try:
             # Generate a unique task ID using a UUID
@@ -367,7 +380,8 @@ class OrchestratorAgent:
                 }
             }
             
-            logger.info(f"Sending task/send request to Specialized Agent: {json.dumps(message)}")
+            logger.info(f"[ORCHESTRATOR DEBUG] Sending task/send request to {agent_name} agent")
+            logger.info(f"[ORCHESTRATOR DEBUG] Full message: {json.dumps(message, indent=2)}")
             
             # Send the request
             response = requests.post(agent_url, json=message)
@@ -375,7 +389,8 @@ class OrchestratorAgent:
             
             # Parse the response
             response_data = response.json()
-            logger.info(f"Received task/send response from Specialized Agent: {json.dumps(response_data)}")
+            logger.info(f"[ORCHESTRATOR DEBUG] Received response from {agent_name} agent")
+            logger.info(f"[ORCHESTRATOR DEBUG] Response data: {json.dumps(response_data, indent=2)}")
             
             # Check if the task was created successfully
             if "result" in response_data and "id" in response_data["result"]:
@@ -388,7 +403,7 @@ class OrchestratorAgent:
                 poll_interval = 1  # Start with 1 second
                 
                 if task_info.get("status", {}).get("state") != "completed":
-                    logger.info(f"Task {task_id} not yet completed, polling for status...")
+                    logger.info(f"[ORCHESTRATOR DEBUG] Task {task_id} state: {task_info.get('status', {}).get('state')}, starting polling...")
                     
                     while retry_count < max_retries:
                         # Wait before polling
@@ -422,7 +437,7 @@ class OrchestratorAgent:
                             # Increment retry count and increase poll interval with exponential backoff
                             retry_count += 1
                             poll_interval = min(poll_interval * 2, 8)  # Double the interval up to max 8 seconds
-                            logger.info(f"Task not yet completed, retrying in {poll_interval} seconds (retry {retry_count}/{max_retries})")
+                            logger.info(f"[ORCHESTRATOR DEBUG] Task {task_id} status: {task_info.get('status', {}).get('state')}, retrying in {poll_interval}s (retry {retry_count}/{max_retries})")
                             
                         except Exception as e:
                             logger.error(f"Error polling for task status: {e}")
@@ -431,7 +446,8 @@ class OrchestratorAgent:
                 
                 # Check the task status
                 if task_info.get("status", {}).get("state") == "completed":
-                    logger.info(f"Task {task_id} reported as COMPLETED. Extracting result.")
+                    logger.info(f"[ORCHESTRATOR DEBUG] Task {task_id} COMPLETED")
+                    logger.info(f"[ORCHESTRATOR DEBUG] Task info: {json.dumps(task_info, indent=2)}")
                     
                     # Extract the result from artifacts
                     artifacts = task_info.get("artifacts", [])
@@ -442,7 +458,8 @@ class OrchestratorAgent:
                             for part in parts:
                                 if part.get("type") == "text":
                                     result_text = part.get("text", "")
-                                    logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:100]}...")
+                                    logger.info(f"[ORCHESTRATOR DEBUG] Extracted result from artifact for task {task_id}")
+                                    logger.info(f"[ORCHESTRATOR DEBUG] Result text: {result_text}")
                                     
                                     # Process the result to handle errors and special formats
                                     try:
@@ -584,7 +601,8 @@ class OrchestratorAgent:
                                      and "text" in task_data["artifacts"][0]["parts"][0]
                                 ):
                                     result_text = task_data["artifacts"][0]["parts"][0]["text"]
-                                    logger.info(f"Extracted result from artifact for task {task_id}: {result_text[:100]}...")
+                                    logger.info(f"[ORCHESTRATOR DEBUG] Extracted result from artifact for task {task_id}")
+                                    logger.info(f"[ORCHESTRATOR DEBUG] Result text: {result_text}")
                                     # If this is from visualization agent, don't parse as JSON
                                     if "visualization" in result_text.lower() or "plot" in result_text.lower() or "chart" in result_text.lower():
                                         return json.dumps({

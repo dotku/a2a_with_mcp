@@ -1,7 +1,7 @@
 {
   "name": "Financial Analysis Agent",
   "description": "Performs financial analysis including valuation metrics, trend analysis, and financial insights.",
-  "url": "https://financial-agent.example.com",
+  "url": "http://localhost:8001",
   "provider": {
     "organization": "Financial Analysts Inc.",
     "url": "https://financial-analysts.example.com"

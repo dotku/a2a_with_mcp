@@ -43,6 +43,7 @@ class A2AClient:
             with connect_sse(
                 client, "POST", self.url, json=request.model_dump()
             ) as event_source:
+                print(f"Connecting to {self.url} for streaming")
                 try:
                     for sse in event_source.iter_sse():
                         yield SendTaskStreamingResponse(**json.loads(sse.data))

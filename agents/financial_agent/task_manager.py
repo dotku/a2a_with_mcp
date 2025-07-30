@@ -5,8 +5,10 @@ import asyncio
 import logging
 import json
 import traceback
-from typing import Dict, Any, List, Optional, Set, Tuple, Union, Callable
-from datetime import datetime
+import httpx
+
+from typing import Dict, Any, List, Optional, Set, Tuple, Union, Callable, Awaitable
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from common.types import (
@@ -19,13 +21,28 @@ from common.types import (
     TaskArtifactUpdateEvent,
     Artifact,
     Message,
+    InternalError,
     PushNotificationConfig,
     TaskPushNotificationConfig,
+    SendTaskStreamingRequest,
+    SendTaskStreamingResponse,
+    JSONRPCResponse,
+    InvalidParamsError,
+    TextPart
 )
 
 from .agent import process_financial_task, process_financial_task_async
 
 # Configure more detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+    handlers=[
+        logging.FileHandler("financial_agent.log"),
+        logging.StreamHandler()
+    ]
+)
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG) # Explicitly set DEBUG level for this logger
 logger.info("task_manager logger explicitly set to DEBUG level")
@@ -99,7 +116,11 @@ class TaskManager:
         # Initialize task history with the incoming message
         history = [message]
         
-        # Create the task
+        # Create the task (store contextId in metadata since Task model doesn't have this field)
+        context_id = str(uuid4())
+        task_metadata = params.metadata or {}
+        task_metadata['contextId'] = context_id
+        
         task = Task(
             id=task_id,
             sessionId=session_id,
@@ -108,7 +129,7 @@ class TaskManager:
                 timestamp=datetime.now()
             ),
             history=history,
-            metadata=params.metadata
+            metadata=task_metadata
         )
         
         logger.info(f"Created task {task_id} with status: {task.status.state}")
@@ -209,7 +230,7 @@ class TaskManager:
                 pushNotificationConfig=config
             )
     
-    async def resubscribe_task(self, params: TaskIdParams, callback: Callable) -> None:
+    async def resubscribe_task(self, params: TaskIdParams, callback: Callable[[Any], Awaitable[None]] ) -> None:
         """
         Resubscribe to task updates.
         
@@ -217,15 +238,19 @@ class TaskManager:
             params: TaskIdParams containing the task ID
             callback: Function to call on task updates
         """
+        logger.info(f"resubscribe_task called for task_id: {params.id}")
         task_id = params.id
-        logger.info(f"Resubscribe request for task: {task_id}")
+        logger.debug(f"current subscribers before: {dict(self.task_subscribers)}")
+        logger.debug(f"Resubscribe request for task: {task_id}")
         
         async with self.lock:
             if task_id not in self.task_subscribers:
+                logger.info(f"Creating new subscriber set for task {task_id}")
                 self.task_subscribers[task_id] = set()
             
             self.task_subscribers[task_id].add(callback)
             logger.info(f"Added subscriber to task {task_id}, total subscribers: {len(self.task_subscribers[task_id])}")
+            logger.info(f"Current subscribers after adding: {dict(self.task_subscribers)}")
             
             # If the task exists, immediately publish its current status
             if task_id in self.tasks:
@@ -235,6 +260,8 @@ class TaskManager:
                 # Create a status update event
                 status_event = TaskStatusUpdateEvent(
                     id=task_id,
+                    taskId=task_id,  # Required field
+                    contextId=task.metadata.get('contextId', str(uuid4())) if task.metadata else str(uuid4()),  # Required field
                     status=task.status,
                     final=task.status.state in [
                         TaskState.COMPLETED,
@@ -247,7 +274,7 @@ class TaskManager:
                 # Call the callback with the status event
                 try:
                     logger.info(f"Calling status callback for task {task_id}")
-                    callback(status_event)
+                    await callback(status_event)
                 except Exception as e:
                     logger.error(f"Error calling status callback for task {task_id}: {e}")
                     logger.error(traceback.format_exc())
@@ -258,13 +285,15 @@ class TaskManager:
                     for artifact in task.artifacts:
                         artifact_event = TaskArtifactUpdateEvent(
                             id=task_id,
+                            taskId=task_id,  # Required field
+                            contextId=task.metadata.get('contextId', str(uuid4())) if task.metadata else str(uuid4()),  # Required field
                             artifact=artifact,
                             metadata=task.metadata
                         )
                         
                         try:
                             logger.info(f"Calling artifact callback for task {task_id}, artifact: {artifact.name}")
-                            callback(artifact_event)
+                            await callback(artifact_event)
                         except Exception as e:
                             logger.error(f"Error calling artifact callback for task {task_id}: {e}")
                             logger.error(traceback.format_exc())
@@ -278,34 +307,49 @@ class TaskManager:
         """
         logger.info(f"Processing task {task_id}")
         
-        task_to_publish = None
-        async with self.lock: # Lock for initial task state update
+        # Get the task but don't change status to WORKING yet
+        current_task_for_processing = None
+        async with self.lock:
             if task_id not in self.tasks:
                 logger.warning(f"Task {task_id} not found for processing")
                 return
             
-            task = self.tasks[task_id]
+            current_task_for_processing = self.tasks[task_id]
+            logger.info(f"Found task {task_id} with status: {current_task_for_processing.status.state}")
+        
+        # Ensure MCP is initialized before changing to WORKING status
+        logger.info(f"Ensuring MCP is ready before processing task {task_id}")
+        from agents.financial_agent.agent import ensure_mcp_initialized
+        try:
+            await ensure_mcp_initialized()
+            logger.info(f"MCP confirmed ready for task {task_id}")
+        except Exception as e:
+            logger.error(f"MCP initialization failed for task {task_id}: {e}")
+            # Don't proceed with task processing if MCP failed
+            return
+        
+        # Now update to WORKING status after MCP is ready
+        task_to_publish = None
+        async with self.lock:
+            if task_id not in self.tasks:
+                logger.warning(f"Task {task_id} disappeared during MCP initialization")
+                return
             
-            # Update task status to WORKING
+            task = self.tasks[task_id]
             task.status = TaskStatus(
                 state=TaskState.WORKING,
                 timestamp=datetime.now()
             )
             self.tasks[task_id] = task
-            task_to_publish = task # Prepare task for publishing after lock release
-            logger.info(f"Updated task {task_id} status to WORKING within lock")
+            task_to_publish = task
+            current_task_for_processing = task
+            logger.info(f"Updated task {task_id} status to WORKING after MCP ready")
         
-        # Publish status update AFTER releasing the initial lock
+        # Publish WORKING status now that we're actually ready to work
         if task_to_publish:
-            logger.info(f"Publishing WORKING state for task {task_id} (outside initial lock)")
+            logger.info(f"Publishing WORKING state for task {task_id} (MCP ready)")
             await self._publish_status_update(task_to_publish, False)
-            logger.info(f"Published WORKING state for task {task_id}, sleeping briefly to allow orchestrator to see update")
-            await asyncio.sleep(0.5)
-        else: # Should not happen if task was found
-            logger.error(f"Task {task_id} was None after initial lock release, cannot publish WORKING state.")
-            return
-
-        current_task_for_processing = task_to_publish # Use the consistent task object
+            await asyncio.sleep(0.1)  # Brief pause
 
         try:
             logger.info(f"Processing task {task_id} with message: '{current_task_for_processing.history[-1].parts[0].text}'")
@@ -315,7 +359,7 @@ class TaskManager:
                 # Add a timeout to the financial task processing (e.g., 60 seconds)
                 updated_task = await asyncio.wait_for(
                     process_financial_task_async(current_task_for_processing),
-                    timeout=60
+                    timeout=600
                 )
                 logger.debug(f"process_financial_task completed for task {task_id}")
             except asyncio.TimeoutError:
@@ -346,6 +390,11 @@ class TaskManager:
                 
                 if failed_task_to_publish:
                      await self._publish_status_update(failed_task_to_publish, True)
+                     # Clean up subscribers for timeout failures
+                     async with self.lock:
+                         if task_id in self.task_subscribers:
+                             logger.info(f"Cleaning up subscribers for timeout failed task {task_id}")
+                             self.task_subscribers.pop(task_id, None)
                 else: # Fallback to the task object we have if it's gone from self.tasks for some reason
                     # This is less ideal as it might not be the absolute latest from shared state
                     # but it's the one we know is FAILED.
@@ -358,6 +407,11 @@ class TaskManager:
                               timestamp=datetime.now()
                          )
                          await self._publish_status_update(task_for_timeout_fail_report, True)
+                         # Clean up subscribers for this timeout case too
+                         async with self.lock:
+                             if task_id in self.task_subscribers:
+                                 logger.info(f"Cleaning up subscribers for timeout failed task {task_id} (fallback case)")
+                                 self.task_subscribers.pop(task_id, None)
                     else:
                          logger.error(f"Task {task_id} not found for publishing FAILED timeout status.")
                 return
@@ -368,8 +422,8 @@ class TaskManager:
             # Prepare artifacts
             artifact_objects = []
             for artifact in artifacts:
-                name = getattr(artifact, "name", "financial-data")
-                description = getattr(artifact, "description", "Financial analysis data")
+                name = getattr(artifact, "name", "financial_analysis_report")
+                description = getattr(artifact, "description", "Comprehensive financial analysis report with market data, technical analysis, and investment insights")
                 # If artifact.parts is a list of dicts or TextPart, extract text
                 content = ""
                 if hasattr(artifact, "parts") and artifact.parts:
@@ -418,6 +472,12 @@ class TaskManager:
                 for artifact in completed_task_to_publish.artifacts:
                      # _publish_artifact_update will acquire its own lock as needed
                     await self._publish_artifact_update(completed_task_to_publish, artifact)
+                
+                # Clean up subscribers after all artifacts are published
+                async with self.lock:
+                    if task_id in self.task_subscribers:
+                        logger.info(f"Cleaning up subscribers for completed task {task_id}")
+                        self.task_subscribers.pop(task_id, None)
             
         except Exception as e:
             logger.error(f"Error processing task {task_id}: {e}")
@@ -447,6 +507,11 @@ class TaskManager:
             # Publish final status update AFTER lock release
             if failed_task_to_publish_on_error:
                 await self._publish_status_update(failed_task_to_publish_on_error, True)
+                # Clean up subscribers for failed tasks too
+                async with self.lock:
+                    if task_id in self.task_subscribers:
+                        logger.info(f"Cleaning up subscribers for failed task {task_id}")
+                        self.task_subscribers.pop(task_id, None)
     
     async def _publish_status_update(self, task: Task, final: bool) -> None:
         """
@@ -457,18 +522,20 @@ class TaskManager:
             final: Whether this is the final status update
         """
         task_id = task.id
-        logger.debug(f"[_publish_status_update] Called for task {task_id}, final: {final}, state: {task.status.state}")
+        logger.info(f"_publish_status_update: Called for task {task_id}, final: {final}, state: {task.status.state}")
         status_event = TaskStatusUpdateEvent(
             id=task_id,
+            taskId=task_id,  # Required field
+            contextId=task.metadata.get('contextId', str(uuid4())) if task.metadata else str(uuid4()),  # Required field  
             status=task.status,
             final=final,
             metadata=task.metadata
         )
-        logger.debug(f"[_publish_status_update] Created status_event for task {task_id}")
+        logger.info(f"_publish_status_update: Created status_event for task {task_id}")
 
-        logger.debug(f"[_publish_status_update] Attempting to publish to subscribers for task {task_id}")
+        logger.info(f"_publish_status_update: About to call _publish_to_subscribers for task {task_id}")
         await self._publish_to_subscribers(task_id, status_event)
-        logger.debug(f"[_publish_status_update] Finished publishing to subscribers for task {task_id}")
+        logger.info(f"_publish_status_update: Finished _publish_to_subscribers for task {task_id}")
 
         logger.debug(f"[_publish_status_update] PRE-PUSH: About to attempt sending push notification for task {task_id}")
         await self._send_push_notification(task_id, status_event)
@@ -499,13 +566,33 @@ class TaskManager:
         # Create an artifact update event
         artifact_event = TaskArtifactUpdateEvent(
             id=task_id,
+            taskId=task_id,  # Required field
+            contextId=task.metadata.get('contextId', str(uuid4())) if task.metadata else str(uuid4()),  # Required field
             artifact=artifact,
             metadata=task.metadata
         )
         
         # Publish to subscribers
         await self._publish_to_subscribers(task_id, artifact_event)
-    
+    async def get_all_task_subscribers_details(self) -> Dict[str, List[str]]:
+        """
+        Get detailed task subscribers information (for debugging).
+        
+        Returns:
+            Dictionary with task IDs and subscriber function names
+        """
+        async with self.lock:
+            result = {}
+            for task_id, subscribers in self.task_subscribers.items():
+                subscriber_names = []
+                for callback in subscribers:
+                    # Get function name or representation
+                    if hasattr(callback, '__name__'):
+                        subscriber_names.append(callback.__name__)
+                    else:
+                        subscriber_names.append(str(callback))
+                result[task_id] = subscriber_names
+            return result
     async def _publish_to_subscribers(self, task_id: str, event: Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]) -> None:
         """
         Publish an event to all subscribers of a task.
@@ -515,29 +602,32 @@ class TaskManager:
             event: The event to publish
         """
         event_type = "status" if isinstance(event, TaskStatusUpdateEvent) else "artifact"
-        logger.info(f"Publishing {event_type} event to subscribers for task {task_id}")
+        logger.info(f"_publish_to_subscribers: Publishing {event_type} event to subscribers for task {task_id}")
         
         async with self.lock:
             # Call registered callbacks
+            logger.info(f"_publish_to_subscribers: Current task_subscribers dict: {dict(self.task_subscribers)}")
+            logger.info(f"_publish_to_subscribers: Total subscriber sets: {len(self.task_subscribers)}")
+            logger.info(f"_publish_to_subscribers: Looking for subscribers for task_id: {task_id}")
+            
             if task_id in self.task_subscribers:
                 subscribers = list(self.task_subscribers[task_id])
                 
-                logger.info(f"Found {len(subscribers)} subscribers for task {task_id}")
+                logger.info(f"_publish_to_subscribers: Found {len(subscribers)} subscribers for task {task_id}")
                 for i, callback in enumerate(subscribers):
                     try:
-                        logger.info(f"Calling subscriber {i+1}/{len(subscribers)} for task {task_id}")
-                        callback(event)
-                        logger.info(f"Successfully called subscriber {i+1} for task {task_id}")
+                        logger.info(f"_publish_to_subscribers: Calling subscriber {i+1}/{len(subscribers)} for task {task_id}")
+                        await callback(event)
+                        logger.info(f"_publish_to_subscribers: Successfully called subscriber {i+1} for task {task_id}")
                     except Exception as e:
-                        logger.error(f"Error calling subscriber callback for task {task_id}: {e}")
+                        logger.error(f"_publish_to_subscribers: Error calling subscriber callback for task {task_id}: {e}")
                         logger.error(traceback.format_exc())
                 
-                # Clean up subscribers if final update
-                if isinstance(event, TaskStatusUpdateEvent) and event.final:
-                    logger.info(f"Final update for task {task_id}, removing subscribers")
-                    self.task_subscribers.pop(task_id, None)
+                # Don't clean up subscribers here - they will be cleaned up after artifacts are published
+                # This prevents the issue where artifacts can't find subscribers after final status update
             else:
-                logger.warning(f"No subscribers found for task {task_id}")
+                logger.warning(f"_publish_to_subscribers: No subscribers found for task {task_id}")
+                logger.warning(f"_publish_to_subscribers: Available task IDs with subscribers: {list(self.task_subscribers.keys())}")
             
             # Send push notification if configured
             if task_id in self.push_notification_configs:
@@ -607,4 +697,15 @@ class TaskManager:
                 await asyncio.sleep(delay)
             else:
                 logger.error(f"[_send_push_notification] Max retries reached for push notification to task {task_id} at {push_config.url}.")
-        logger.debug(f"[_send_push_notification] Finished processing for task {task_id}") 
+        logger.debug(f"[_send_push_notification] Finished processing for task {task_id}")
+
+    async def on_send_task_subscribe(self, request: SendTaskStreamingRequest) -> Task:
+        """Handles the 'send task subscribe' request for streaming."""
+        try:
+            # Just use the existing send_task method for streaming requests
+            return await self.send_task(request.params)
+            
+        except Exception as e:
+            logger.error(f"Error in streaming task subscription: {e}")
+            logger.error(traceback.format_exc())
+            raise

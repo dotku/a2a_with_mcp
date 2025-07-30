@@ -10,7 +10,6 @@ from state.state import AppState, SettingsState, StateMessage
 from state.host_agent_service import SendMessage, ListConversations, convert_message_to_state
 from .chat_bubble import chat_bubble
 from .form_render import is_form, render_form, form_sent
-from .async_poller import async_poller, AsyncAction
 from common.types import Message, TextPart
 
 
@@ -58,41 +57,81 @@ async def send_message(message: str, message_id: str = ""):
       app_state.conversations), None)
   if conversation:
     conversation.message_ids.append(state_message.message_id)
-  response = await SendMessage(request)
+  
+  # Mark as processing
+  app_state.background_tasks[message_id] = "processing"
+  
+  try:
+    # Wait for the agent to complete processing
+    response = await SendMessage(request)
+    
+    # Add agent response to messages
+    if response:
+      agent_message = convert_message_to_state(response)
+      app_state.messages.append(agent_message)
+      if conversation:
+        conversation.message_ids.append(agent_message.message_id)
+    
+    # Mark as completed
+    app_state.background_tasks[message_id] = "completed"
+    
+  except Exception as e:
+    print(f"Error processing message: {e}")
+    app_state.background_tasks[message_id] = "error"
+  
+  # Clear the input after successful send
+  state.message_content = ""
 
-
-async def send_message_enter(e: me.InputEnterEvent):  # pylint: disable=unused-argument
+async def send_message_enter(e: me.InputEnterEvent):
     """send message handler"""
-    yield
     state = me.state(PageState)
+    app_state = me.state(AppState)
+    
+    # Don't send if already processing
+    if any(status == "processing" for status in app_state.background_tasks.values()):
+        return
+    
     state.message_content = e.value
-    app_state = me.state(AppState)
     message_id = str(uuid.uuid4())
-    app_state.background_tasks[message_id] = ""
+    app_state.background_tasks[message_id] = "queued"
     yield
     await send_message(state.message_content, message_id)
     yield
 
-
-async def send_message_button(e: me.ClickEvent):  # pylint: disable=unused-argument
+async def send_message_button(e: me.ClickEvent):
     """send message button handler"""
-    yield
     state = me.state(PageState)
     app_state = me.state(AppState)
+    
+    # Don't send if already processing
+    if any(status == "processing" for status in app_state.background_tasks.values()):
+        return
+    
     message_id = str(uuid.uuid4())
-    app_state.background_tasks[message_id] = ""
+    app_state.background_tasks[message_id] = "queued"
+    yield
     await send_message(state.message_content, message_id)
     yield
-
 
 @me.component
 def conversation():
     """Conversation component"""
     page_state = me.state(PageState)
     app_state = me.state(AppState)
+    
+    # Check if agent is processing
+    is_processing = any(status == "processing" for status in app_state.background_tasks.values())
+    
     if "conversation_id" in me.query_params:
       page_state.conversation_id = me.query_params["conversation_id"]
       app_state.current_conversation_id = page_state.conversation_id
+      
+      # Trigger a refresh if we have a conversation ID but no messages loaded yet
+      if page_state.conversation_id and len(app_state.messages) == 0:
+          # The SSE stream in page_scaffold will handle loading the conversation data
+          # We just need to make sure the current_conversation_id is set correctly
+          pass
+    
     with me.box(
         style=me.Style(
             display="flex",
@@ -112,6 +151,11 @@ def conversation():
         else:
           chat_bubble(message, message.message_id)
 
+      # Show processing indicator
+      if is_processing:
+        with me.box(style=me.Style(padding=me.Padding.all(10))):
+          me.text("Agent is analyzing your request...", style=me.Style(color="gray"))
+
       with me.box(
           style=me.Style(
               display="flex",
@@ -123,13 +167,16 @@ def conversation():
           )
       ):
         me.input(
-            label="How can I help you?",
+            label="How can I help you?" if not is_processing else "Please wait...",
+            value=page_state.message_content,
+            disabled=is_processing,  # Disable input while processing
             on_blur=on_blur,
-            on_enter=send_message_enter,
+            on_enter=send_message_enter if not is_processing else None,
             style=me.Style(min_width="80vw"),
         )
         with me.content_button(
             type="flat",
-            on_click=send_message_button,
+            disabled=is_processing,  # Disable button while processing
+            on_click=send_message_button if not is_processing else None,
         ):
             me.icon(icon="send")

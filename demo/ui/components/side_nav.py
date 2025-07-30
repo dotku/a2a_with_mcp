@@ -14,6 +14,7 @@ page_json = [
     {"display": "Event List", "icon": "list", "route": "/event_list"},
     {"display": "Task List", "icon": "task", "route": "/task_list"},
     {"display": "Settings", "icon": "settings", "route": "/settings"},
+    {"display": "Memory", "icon": "memory", "route": "/app_state"},
 ]
 
 def on_sidenav_menu_click(e: me.ClickEvent):  # pylint: disable=unused-argument

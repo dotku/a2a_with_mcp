@@ -32,7 +32,7 @@ from common.types import (
 
 # Configure more verbose logging
 logging.basicConfig(level=logging.DEBUG, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Add a file handler for persistent logging
@@ -70,6 +70,7 @@ filtered_tools: List[Any] = []
 tool_node = ToolNode([])
 mcp_initialized = False
 mcp_event_loop = None
+_mcp_init_lock = asyncio.Lock()
 
 # Create a global event loop for all MCP operations
 def get_mcp_event_loop():
@@ -85,8 +86,8 @@ def get_mcp_event_loop():
 async def init_mcp_client():
     """Initialize the MCP client asynchronously."""
     global mcp_client, all_fetched_tools, filtered_tools
-    if mcp_client is not None:
-        logger.info("MCP client already initialized")
+    if mcp_client is not None and filtered_tools:
+        logger.info("MCP client already initialized, skipping")
         return filtered_tools
     
     try:
@@ -99,6 +100,17 @@ async def init_mcp_client():
         logger.debug("MultiServerMCPClient instantiated. Fetching tools...")
         all_fetched_tools = await mcp_client.get_tools()
         logger.debug(f"MCP client get_tools() completed. Raw tools fetched: {[t.name for t in all_fetched_tools]}")
+
+        # Give MCP servers time to fully initialize
+        logger.info("Waiting for MCP servers to fully initialize...")
+        await asyncio.sleep(3)
+        
+        # Verify tools are still available after initialization
+        try:
+            test_tools = await mcp_client.get_tools()
+            logger.debug(f"MCP tools verification completed: {[t.name for t in test_tools]}")
+        except Exception as e:
+            logger.warning(f"MCP tools verification failed: {e}")
 
         logger.info(f"MCP client initialized with fetched tools: {[t.name for t in all_fetched_tools]}")
 
@@ -169,23 +181,28 @@ else:
 # Ensure MCP client is initialized before processing tasks
 async def ensure_mcp_initialized():
     """Ensure MCP client is initialized before processing tasks."""
-    global mcp_initialized, model_with_tools, filtered_tools, tool_node
-    if not mcp_initialized:
-        logger.info("First-time MCP initialization check: MCP not yet initialized.")
-        logger.debug("Calling init_mcp_client...")
-        loaded_and_filtered_tools = await init_mcp_client()
-        logger.debug(f"init_mcp_client returned: {[t.name for t in loaded_and_filtered_tools] if loaded_and_filtered_tools else 'None'}")
-        if loaded_and_filtered_tools:
-            filtered_tools = loaded_and_filtered_tools
-            tool_node = ToolNode(filtered_tools)
-            logger.info(f"ToolNode initialized with {len(filtered_tools)} tools.")
-            if api_key:
-                model_with_tools = llm.bind_tools(filtered_tools)
-                logger.info(f"FILTERED Tools bound to model: {len(filtered_tools)} tools available")
+    global mcp_initialized, model_with_tools, filtered_tools, tool_node, _mcp_init_lock
+    
+    # Use lock to prevent concurrent initialization
+    async with _mcp_init_lock:
+        if not mcp_initialized:
+            logger.info("MCP initialization check: MCP not yet initialized.")
+            logger.debug("Calling init_mcp_client...")
+            loaded_and_filtered_tools = await init_mcp_client()
+            logger.debug(f"init_mcp_client returned: {[t.name for t in loaded_and_filtered_tools] if loaded_and_filtered_tools else 'None'}")
+            if loaded_and_filtered_tools:
+                filtered_tools = loaded_and_filtered_tools
+                tool_node = ToolNode(filtered_tools)
+                logger.info(f"ToolNode initialized with {len(filtered_tools)} tools.")
+                if api_key:
+                    model_with_tools = llm.bind_tools(filtered_tools)
+                    logger.info(f"FILTERED Tools bound to model: {len(filtered_tools)} tools available")
+            else:
+                logger.warning("MCP tools not initialized or failed. Using empty ToolNode.")
+                tool_node = ToolNode([])
+            mcp_initialized = True
         else:
-            logger.warning("MCP tools not initialized or failed. Using empty ToolNode.")
-            tool_node = ToolNode([])
-        mcp_initialized = True
+            logger.debug("MCP already initialized, skipping initialization")
     return filtered_tools
         
 from common.types import Task, TextPart, TaskStatus, TaskState
@@ -193,16 +210,30 @@ from common.types import Task, TextPart, TaskStatus, TaskState
 def extract_task_from_message(task: Task) -> Dict[str, Any]:
     """Extract task information from a message."""
     history = task.history or []
+    logger.debug(f"Task {task.id} history length: {len(history)}")
     query = history[-1] if history else None
-    if not query or query.role != "user":
+    if not query:
+        logger.warning(f"Task {task.id} has no history")
         return {"messages": [], "task_id": task.id}
+    if query.role != "user":
+        logger.warning(f"Task {task.id} last message role is '{query.role}', not 'user'")
+        return {"messages": [], "task_id": task.id}
+    
     text_content = []
-    for part in query.parts:
+    logger.debug(f"Task {task.id} query parts: {len(query.parts)}")
+    for i, part in enumerate(query.parts):
+        logger.debug(f"Task {task.id} part {i}: type={getattr(part, 'type', 'no-type')}, dict={isinstance(part, dict)}")
         if isinstance(part, dict) and part.get("type") == "text":
-            text_content.append(part.get("text", ""))
+            text = part.get("text", "")
+            text_content.append(text)
+            logger.debug(f"Task {task.id} part {i} dict text: '{text}'")
         elif hasattr(part, "type") and part.type == "text":
-            text_content.append(part.text)
+            text = part.text
+            text_content.append(text)
+            logger.debug(f"Task {task.id} part {i} object text: '{text}'")
+    
     query_text = " ".join(text_content)
+    logger.info(f"Task {task.id} extracted query text: '{query_text}'")
     return {"messages": [HumanMessage(content=query_text)], "task_id": task.id}
 
 def create_agent_message(content: str) -> Message:
@@ -230,9 +261,26 @@ def call_model(state: MessagesState):
     """Call the LLM with the current messages."""
     try:
         messages = state["messages"]
-        logger.info(f"Calling model with messages: {messages}")
+        logger.info(f"Calling model with {len(messages)} messages")
+        logger.debug(f"Model has tools: {hasattr(model_with_tools, 'bound_tools') if hasattr(model_with_tools, 'bound_tools') else 'No bound_tools attr'}")
+        logger.debug(f"Filtered tools available: {len(filtered_tools)} tools: {[t.name for t in filtered_tools] if filtered_tools else 'None'}")
+        logger.debug(f"MCP initialized: {mcp_initialized}")
+        
+        # Log the actual message content being sent to the model
+        for i, msg in enumerate(messages):
+            if hasattr(msg, 'content'):
+                logger.info(f"Message {i}: role={getattr(msg, 'type', 'unknown')}, content='{msg.content[:100]}...'")
+        
         system_message = HumanMessage(content="""\
-You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools.
+You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools. Your role is to provide comprehensive financial analysis reports that combine multiple data sources and present actionable insights.
+
+REPORT STRUCTURE: Always structure your responses as comprehensive financial analysis reports with:
+1. **Executive Summary** - Key findings and recommendations
+2. **Current Market Data** - Latest prices, market cap, volume
+3. **Technical Analysis** - Price trends, historical performance
+4. **Market Context** - Exchange data, trading patterns, VWAP analysis
+5. **Risk Assessment** - Volatility analysis and risk factors
+6. **Investment Outlook** - Forward-looking analysis and recommendations
 
 Database Tools:
 - Use the 'query' tool to run SQL queries against the database for internal financial data, including CURRENT crypto prices.
@@ -291,7 +339,7 @@ External Crypto Analysis Tools (Use these for market context and history, NOT cu
     date_added DATE
   )
 
-Combine information from the database and the external analysis tools as needed to answer user queries comprehensively. Prioritize the database 'query' tool for fetching the most recent price.
+IMPORTANT: Always provide comprehensive financial analysis reports combining data from both database queries and external market analysis tools. Include specific metrics, percentages, and actionable insights. Structure your response professionally as a complete financial analysis report.
 """)
         if not any(isinstance(msg, HumanMessage) and "financial analysis expert" in msg.content for msg in messages):
             messages = [system_message] + messages
@@ -320,7 +368,15 @@ async def process_financial_task_async(task: Task) -> Any:
         state = extract_task_from_message(task)
         messages = state["messages"]
         system_message = HumanMessage(content="""
-You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools.
+You are a financial analysis expert with access to a PostgreSQL database and external cryptocurrency market analysis tools. Your role is to provide comprehensive financial analysis reports that combine multiple data sources and present actionable insights.
+
+REPORT STRUCTURE: Always structure your responses as comprehensive financial analysis reports with:
+1. **Executive Summary** - Key findings and recommendations
+2. **Current Market Data** - Latest prices, market cap, volume
+3. **Technical Analysis** - Price trends, historical performance
+4. **Market Context** - Exchange data, trading patterns, VWAP analysis
+5. **Risk Assessment** - Volatility analysis and risk factors
+6. **Investment Outlook** - Forward-looking analysis and recommendations
 
 Database Tools:
 - Use the 'query' tool to run SQL queries against the database for internal financial data, including CURRENT crypto prices.
@@ -379,7 +435,7 @@ External Crypto Analysis Tools (Use these for market context and history, NOT cu
     date_added DATE
   )
 
-Combine information from the database and the external analysis tools as needed to answer user queries comprehensively. Prioritize the database 'query' tool for fetching the most recent price.
+IMPORTANT: Always provide comprehensive financial analysis reports combining data from both database queries and external market analysis tools. Include specific metrics, percentages, and actionable insights. Structure your response professionally as a complete financial analysis report.
         """)
         messages = [system_message] + messages
         workflow = StateGraph(MessagesState)
@@ -416,8 +472,8 @@ Combine information from the database and the external analysis tools as needed 
             ),
             artifacts=[
                 Artifact(
-                    name="financial_insights",
-                    description="Financial analysis results",
+                    name="financial_analysis_report",
+                    description="Comprehensive financial analysis report with market data, technical analysis, and investment insights",
                     parts=[TextPart(text=response_text)]
                 )
             ],
@@ -441,8 +497,8 @@ Combine information from the database and the external analysis tools as needed 
             ),
             artifacts=[
                 Artifact(
-                    name="financial_insights",
-                    description="Financial analysis results",
+                    name="financial_analysis_report",
+                    description="Comprehensive financial analysis report with market data, technical analysis, and investment insights",
                     parts=[TextPart(text=response_text)]
                 )
             ],

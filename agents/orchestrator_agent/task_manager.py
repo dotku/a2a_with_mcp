@@ -123,7 +123,20 @@ class OrchestratorTaskManager(InMemoryTaskManager):
             
             # Process the request
             input_data = self._extract_input_data(task_send_params)
+            
+            # Log the original user request to orchestrator (streaming)
+            logger.info(f"ORCHESTRATOR RECEIVED USER REQUEST (STREAMING):")
+            logger.info(f"Task ID: {task_send_params.id}")
+            logger.info(f"Input Data: {input_data}")
+            logger.info("=" * 60)
+            
             result = process_request(input_data)
+            
+            # Log the orchestrator's final response before streaming to user
+            logger.info(f"ORCHESTRATOR FINAL RESPONSE TO USER (STREAMING):")
+            logger.info(f"Task ID: {task_send_params.id}")
+            logger.info(f"Result: {result}")
+            logger.info("=" * 60)
             
             # Second update - results ready
             artifact = Artifact(
@@ -234,8 +247,20 @@ class OrchestratorTaskManager(InMemoryTaskManager):
             # Extract the query from the request
             input_data = self._extract_input_data(request.params)
             
+            # Log the original user request to orchestrator
+            logger.info(f"ORCHESTRATOR RECEIVED USER REQUEST:")
+            logger.info(f"Task ID: {request.params.id}")
+            logger.info(f"Input Data: {input_data}")
+            logger.info("=" * 60)
+            
             # Process the request synchronously
             result = process_request(input_data)
+            
+            # Log the orchestrator's final response before sending to user
+            logger.info(f"ORCHESTRATOR FINAL RESPONSE TO USER:")
+            logger.info(f"Task ID: {request.params.id}")
+            logger.info(f"Result: {result}")
+            logger.info("=" * 60)
             
             # Create message and artifact
             parts = [TextPart(text=json.dumps(result))]
@@ -564,4 +589,46 @@ class OrchestratorTaskManager(InMemoryTaskManager):
                     raise Exception(f"Error delegating task: status {response.status_code}")
         except Exception as e:
             logger.error(f"Error delegating task to {agent_url}: {e}")
-            raise 
+            raise
+    
+    async def delegate_to_agent(self, agent_url: str, task_content: str, original_task_id: str) -> Any:
+        """Delegate a task to a specific agent"""
+        try:
+            # Log the content being sent to the agent
+            logger.info(f"ORCHESTRATOR SENDING TO AGENT {agent_url}:")
+            logger.info(f"Task ID: {original_task_id}")
+            logger.info(f"Content: {task_content}")
+            logger.info("-" * 50)
+            
+            # Create task for delegation
+            delegated_task = Task(
+                id=str(uuid.uuid4()),
+                sessionId=original_task_id,  # Link to original task
+                history=[Message(
+                    id=str(uuid.uuid4()),
+                    role="user",
+                    parts=[TextPart(text=task_content)]
+                )]
+            )
+            
+            # Send to agent
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{agent_url}/api/tasks",
+                    json=delegated_task.model_dump(),
+                    headers={"Content-Type": "application/json"}
+                )
+                
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"ORCHESTRATOR RECEIVED FROM AGENT {agent_url}:")
+                logger.info(f"Response: {result}")
+                logger.info("-" * 50)
+                return result
+            else:
+                logger.error(f"Agent {agent_url} returned error: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error delegating to agent {agent_url}: {e}")
+            return None

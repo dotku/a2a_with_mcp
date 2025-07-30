@@ -5,6 +5,27 @@ run:
 import sys
 import os # For path manipulation
 
+import asyncio
+import threading
+
+import mesop as me
+
+from state.state import AppState
+from components.page_scaffold import page_scaffold
+from components.api_key_dialog import api_key_dialog
+from pages.home import home_page_content
+from pages.agent_list import agent_list_page
+from pages.conversation import conversation_page
+from pages.event_list import event_list_page
+from pages.settings import settings_page_content
+from pages.task_list import task_list_page
+from pages.app_state import app_state_page
+from state import host_agent_service
+from service.server.server import ConversationServer
+from fastapi import FastAPI, APIRouter
+from fastapi.middleware.wsgi import WSGIMiddleware
+from dotenv import load_dotenv
+
 # --- Start of sys.path modification ---
 # Add the project root to sys.path to allow for absolute imports from project root
 # This script is located at <project_root>/demo/ui/main.py
@@ -23,27 +44,20 @@ print(f"DEBUG: Calculated project root to add to sys.path: {_project_root_abs_pa
 print(f"DEBUG: Current sys.path after modification: {sys.path}")
 # --- End of sys.path modification ---
 
-import asyncio
-import threading
-
-import mesop as me
-
-from state.state import AppState
-from components.page_scaffold import page_scaffold
-from components.api_key_dialog import api_key_dialog
-from pages.home import home_page_content
-from pages.agent_list import agent_list_page
-from pages.conversation import conversation_page
-from pages.event_list import event_list_page
-from pages.settings import settings_page_content
-from pages.task_list import task_list_page
-from state import host_agent_service
-from service.server.server import ConversationServer
-from fastapi import FastAPI, APIRouter
-from fastapi.middleware.wsgi import WSGIMiddleware
-from dotenv import load_dotenv
-
 load_dotenv()
+
+def _load_conversation_data(state, conversation_id):
+    """Load conversation data in a background thread"""
+    async def _async_load():
+        await host_agent_service.UpdateAppState(state, conversation_id)
+    
+    # Run the async function in a new event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_async_load())
+    finally:
+        loop.close()
 
 def on_load(e: me.LoadEvent):  # pylint: disable=unused-argument
     """On load event"""
@@ -51,6 +65,13 @@ def on_load(e: me.LoadEvent):  # pylint: disable=unused-argument
     me.set_theme_mode(state.theme_mode)
     if "conversation_id" in me.query_params:
       state.current_conversation_id = me.query_params["conversation_id"]
+      # Load conversation data in background thread
+      if state.current_conversation_id:
+          threading.Thread(
+              target=_load_conversation_data,
+              args=(state, state.current_conversation_id),
+              daemon=True
+          ).start()
     else:
       state.current_conversation_id = ""
     
@@ -74,6 +95,17 @@ security_policy=me.SecurityPolicy(
     ]
   )
 
+
+@me.page(
+    path="/app_state",
+    title="App State",
+    on_load=on_load,
+    security_policy=security_policy,
+)
+def get_app_state_page():
+    """App State Page"""
+    api_key_dialog()
+    app_state_page(me.state(AppState))
 
 @me.page(
     path="/",

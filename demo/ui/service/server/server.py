@@ -3,9 +3,11 @@ import base64
 import threading
 import os
 import uuid
-from typing import Any
+import json
+from typing import Any, AsyncGenerator
 from fastapi import APIRouter
 from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
 from common.types import Message, Task, FilePart, FileContent
 from .in_memory_manager import InMemoryFakeAgentManager
 from .application_manager import ApplicationManager
@@ -40,8 +42,10 @@ class ConversationServer:
     uses_vertex_ai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
     
     if agent_manager.upper() == "ADK":
+      print('use ADKHostManager')
       self.manager = ADKHostManager(api_key=api_key, uses_vertex_ai=uses_vertex_ai)
     else:
+      print('use InMemoryFakeAgentManager')
       self.manager = InMemoryFakeAgentManager()
     self._file_cache = {} # dict[str, FilePart] maps file id to message data
     self._message_to_cache = {} # dict[str, str] maps message id to cache id
@@ -90,6 +94,10 @@ class ConversationServer:
         "/api_key/update",
         self._update_api_key,
         methods=["POST"])
+    router.add_api_route(
+        "/events/stream",
+        self._stream_events,
+        methods=["GET"])
 
   # Update API key in manager
   def update_api_key(self, api_key: str):
@@ -104,6 +112,7 @@ class ConversationServer:
     message_data = await request.json()
     message = Message(**message_data['params'])
     message = self.manager.sanitize_message(message)
+    print(f"Sending message: {message.model_dump_json(indent=2)}")
     t = threading.Thread(target=lambda: asyncio.run(self.manager.process_message(message)))
     t.start()
     return SendMessageResponse(result=MessageInfo(
@@ -195,3 +204,91 @@ class ConversationServer:
         return {"status": "error", "message": "No API key provided"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+  async def _stream_events(self) -> StreamingResponse:
+    """Stream events using Server-Sent Events"""
+    
+    async def event_generator() -> AsyncGenerator[str, None]:
+        last_event_count = 0
+        last_message_count = {}  # conversation_id -> message_count
+        last_task_count = 0
+        last_pending_count = 0
+        
+        heartbeat_counter = 0
+        while True:
+            try:
+                has_updates = False
+                
+                # Check for new events
+                current_events = self.manager.events
+                if isinstance(current_events, list) and len(current_events) > last_event_count:
+                    for event in current_events[last_event_count:]:
+                        yield f"data: {json.dumps({'type': 'event', 'data': event.model_dump()})}\n\n"
+                    last_event_count = len(current_events)
+                    has_updates = True
+                
+                # Check for new messages in conversations
+                if isinstance(self.manager.conversations, list):
+                    for conversation in self.manager.conversations:
+                        conv_id = conversation.conversation_id
+                        if hasattr(conversation, 'messages') and isinstance(conversation.messages, list):
+                            current_msg_count = len(conversation.messages)
+                            last_count = last_message_count.get(conv_id, 0)
+                            
+                            if current_msg_count > last_count:
+                                # Send new messages
+                                new_messages = conversation.messages[last_count:]
+                                cached_messages = self.cache_content(new_messages)
+                                for msg in cached_messages:
+                                    yield f"data: {json.dumps({'type': 'message', 'conversation_id': conv_id, 'data': msg.model_dump()})}\n\n"
+                                last_message_count[conv_id] = current_msg_count
+                                has_updates = True
+                
+                # Check for new tasks only if there might be updates
+                current_tasks = self.manager.tasks
+                if isinstance(current_tasks, list) and len(current_tasks) > last_task_count:
+                    for task in current_tasks[last_task_count:]:
+                        yield f"data: {json.dumps({'type': 'task', 'data': task.model_dump()})}\n\n"
+                    last_task_count = len(current_tasks)
+                    has_updates = True
+                
+                # Check for pending message updates
+                current_pending = self.manager.get_pending_messages()
+                # Convert to dict format if it's a list of tuples
+                if isinstance(current_pending, list) and current_pending and isinstance(current_pending[0], tuple):
+                    pending_dict = dict(current_pending)
+                else:
+                    pending_dict = current_pending if isinstance(current_pending, dict) else {}
+                
+                current_pending_count = len(pending_dict) if isinstance(pending_dict, dict) else 0
+                if current_pending_count != last_pending_count:
+                    yield f"data: {json.dumps({'type': 'pending', 'data': pending_dict})}\n\n"
+                    last_pending_count = current_pending_count
+                    has_updates = True
+                
+                # Send heartbeat every 100 iterations (10 seconds at 0.1s intervals)
+                heartbeat_counter += 1
+                if heartbeat_counter >= 100:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': asyncio.get_event_loop().time()})}\n\n"
+                    heartbeat_counter = 0
+                
+                # Sleep longer if no updates to reduce resource usage
+                if has_updates:
+                    await asyncio.sleep(0.1)  # Quick check if we had updates
+                else:
+                    await asyncio.sleep(1.0)  # Longer sleep if no activity
+                
+            except Exception as e:
+                print(f"SSE stream error: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                await asyncio.sleep(5)  # Wait longer on error
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        }
+    )

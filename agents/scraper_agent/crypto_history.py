@@ -45,7 +45,7 @@ def setup_tables(cur):
     # REMOVED DROP TABLE statements to preserve data on subsequent runs
     
     cur.execute("""
-    -- Quotes table with timestamp column for historical data
+    -- Quotes table with last_updated column for historical data
     CREATE TABLE IF NOT EXISTS crypto_quotes (
       id SERIAL,
       symbol TEXT NOT NULL,
@@ -55,11 +55,11 @@ def setup_tables(cur):
       pct_change_1h DOUBLE PRECISION,
       pct_change_24h DOUBLE PRECISION,
       pct_change_7d DOUBLE PRECISION,
-      timestamp TIMESTAMP NOT NULL,
+      last_updated TIMESTAMP NOT NULL,
       PRIMARY KEY (id)
     );
     
-    -- Listings table with timestamp column for historical data
+    -- Listings table with last_updated column for historical data
     CREATE TABLE IF NOT EXISTS crypto_listings (
       id SERIAL,
       symbol TEXT NOT NULL,
@@ -69,26 +69,26 @@ def setup_tables(cur):
       max_supply DOUBLE PRECISION,
       num_market_pairs INTEGER,
       volume_24h DOUBLE PRECISION,
-      timestamp TIMESTAMP NOT NULL,
+      last_updated TIMESTAMP NOT NULL,
       PRIMARY KEY (id)
     );
     
-    -- Global metrics with timestamp column for historical data
+    -- Global metrics with last_updated column for historical data
     CREATE TABLE IF NOT EXISTS global_metrics (
       id SERIAL,
       metric TEXT NOT NULL,
       value DOUBLE PRECISION,
-      timestamp TIMESTAMP NOT NULL,
+      last_updated TIMESTAMP NOT NULL,
       PRIMARY KEY (id)
     );
     
-    -- Price conversions with timestamp column for historical data
+    -- Price conversions with last_updated column for historical data
     CREATE TABLE IF NOT EXISTS price_conversions (
       id SERIAL,
       base_symbol TEXT NOT NULL,
       target_symbol TEXT NOT NULL,
       rate DOUBLE PRECISION,
-      timestamp TIMESTAMP NOT NULL,
+      last_updated TIMESTAMP NOT NULL,
       PRIMARY KEY (id)
     );
     
@@ -108,10 +108,10 @@ def setup_tables(cur):
     );
     
     -- Create indexes for efficient historical queries
-    CREATE INDEX IF NOT EXISTS crypto_quotes_symbol_timestamp_idx ON crypto_quotes(symbol, timestamp);
-    CREATE INDEX IF NOT EXISTS crypto_listings_symbol_timestamp_idx ON crypto_listings(symbol, timestamp);
-    CREATE INDEX IF NOT EXISTS global_metrics_metric_timestamp_idx ON global_metrics(metric, timestamp);
-    CREATE INDEX IF NOT EXISTS price_conversions_symbols_timestamp_idx ON price_conversions(base_symbol, target_symbol, timestamp);
+    CREATE INDEX IF NOT EXISTS crypto_quotes_symbol_timestamp_idx ON crypto_quotes(symbol, last_updated);
+    CREATE INDEX IF NOT EXISTS crypto_listings_symbol_timestamp_idx ON crypto_listings(symbol, last_updated);
+    CREATE INDEX IF NOT EXISTS global_metrics_metric_timestamp_idx ON global_metrics(metric, last_updated);
+    CREATE INDEX IF NOT EXISTS price_conversions_symbols_timestamp_idx ON price_conversions(base_symbol, target_symbol, last_updated);
     """)
 
 
@@ -140,7 +140,7 @@ def insert_data(conn):
     # Insert into quotes table (historical approach)
     execute_values(cur, """
         INSERT INTO crypto_quotes
-        (symbol, price_usd, market_cap, volume_24h, pct_change_1h, pct_change_24h, pct_change_7d, timestamp)
+        (symbol, price_usd, market_cap, volume_24h, pct_change_1h, pct_change_24h, pct_change_7d, last_updated)
         VALUES %s
     """, quote_rows)
 
@@ -163,7 +163,7 @@ def insert_data(conn):
     # Insert into listings table (historical approach)
     execute_values(cur, """
         INSERT INTO crypto_listings
-        (symbol, rank, circulating_supply, total_supply, max_supply, num_market_pairs, volume_24h, timestamp)
+        (symbol, rank, circulating_supply, total_supply, max_supply, num_market_pairs, volume_24h, last_updated)
         VALUES %s
     """, listing_rows)
 
@@ -175,7 +175,7 @@ def insert_data(conn):
     # Insert into global metrics table (historical approach)
     execute_values(cur, """
         INSERT INTO global_metrics
-        (metric, value, timestamp)
+        (metric, value, last_updated)
         VALUES %s
     """, global_rows)
 
@@ -187,7 +187,7 @@ def insert_data(conn):
     # Insert into price conversions table (historical approach)
     execute_values(cur, """
         INSERT INTO price_conversions
-        (base_symbol, target_symbol, rate, timestamp)
+        (base_symbol, target_symbol, rate, last_updated)
         VALUES %s
     """, conv_row)
 
@@ -238,11 +238,11 @@ def analyze_price_history(conn, symbol, days=30):
     
     # Query historical data
     cur.execute("""
-        SELECT timestamp, price_usd, market_cap, volume_24h, 
+        SELECT last_updated, price_usd, market_cap, volume_24h, 
                pct_change_1h, pct_change_24h, pct_change_7d
         FROM crypto_quotes
-        WHERE symbol = %s AND timestamp BETWEEN %s AND %s
-        ORDER BY timestamp
+        WHERE symbol = %s AND last_updated BETWEEN %s AND %s
+        ORDER BY last_updated
     """, (symbol, start_date, end_date))
     
     rows = cur.fetchall()
@@ -254,7 +254,7 @@ def analyze_price_history(conn, symbol, days=30):
     
     # Convert to DataFrame
     df = pd.DataFrame(rows, columns=[
-        'timestamp', 'price', 'market_cap', 'volume_24h', 
+        'last_updated', 'price', 'market_cap', 'volume_24h', 
         'pct_change_1h', 'pct_change_24h', 'pct_change_7d'
     ])
     
@@ -287,12 +287,12 @@ def analyze_price_history(conn, symbol, days=30):
     plt.figure(figsize=(12, 8))
     
     plt.subplot(2, 1, 1)
-    plt.plot(df['timestamp'], df['price'], label=f'{symbol} Price')
+    plt.plot(df['last_updated'], df['price'], label=f'{symbol} Price')
     
     if 'ma_7d' in df.columns:
-        plt.plot(df['timestamp'], df['ma_7d'], label='7-Day MA')
+        plt.plot(df['last_updated'], df['ma_7d'], label='7-Day MA')
     if 'ma_30d' in df.columns:
-        plt.plot(df['timestamp'], df['ma_30d'], label='30-Day MA')
+        plt.plot(df['last_updated'], df['ma_30d'], label='30-Day MA')
     
     plt.title(f'{symbol} Price History')
     plt.ylabel('Price (USD)')
@@ -300,7 +300,7 @@ def analyze_price_history(conn, symbol, days=30):
     plt.grid(True)
     
     plt.subplot(2, 1, 2)
-    plt.bar(df['timestamp'], df['volume_24h'], color='gray', alpha=0.5)
+    plt.bar(df['last_updated'], df['volume_24h'], color='gray', alpha=0.5)
     plt.title(f'{symbol} Trading Volume')
     plt.ylabel('Volume (24h)')
     plt.grid(True)

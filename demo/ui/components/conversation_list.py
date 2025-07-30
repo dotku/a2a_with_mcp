@@ -26,17 +26,17 @@ def conversation_list(conversations: List[StateConversation]):
             flex_direction="column",
         )
     ):
-        me.table(
-          df,
-          on_click=on_click,
-          header=me.TableHeader(sticky=True),
-          columns={
-            "ID": me.TableColumn(sticky=True),
-            "Name": me.TableColumn(sticky=True),
-            "Status": me.TableColumn(sticky=True),
-            "Messages": me.TableColumn(sticky=True),
-          },
-        )
+        # me.table(
+        #   df,
+        #   on_click=on_click,
+        #   header=me.TableHeader(sticky=True),
+        #   columns={
+        #     "ID": me.TableColumn(sticky=True),
+        #     "Name": me.TableColumn(sticky=True),
+        #     "Status": me.TableColumn(sticky=True),
+        #     "Messages": me.TableColumn(sticky=True),
+        #   },
+        # )
         with me.content_button(
             type="raised",
             on_click=add_conversation,
@@ -50,13 +50,28 @@ def conversation_list(conversations: List[StateConversation]):
             ),
         ):
             me.icon(icon="add")
+        me.table(
+            df,
+            on_click=on_click,
+            header=me.TableHeader(sticky=True),
+            columns={
+                "ID": me.TableColumn(sticky=True),
+                "Name": me.TableColumn(sticky=True),
+                "Status": me.TableColumn(sticky=True),
+                "Messages": me.TableColumn(sticky=True),
+            },
+        )
 
 
 async def add_conversation(e: me.ClickEvent):  # pylint: disable=unused-argument
     """add conversation button handler"""
     response = await CreateConversation()
-    me.state(AppState).messages = []
-    me.navigate("/conversation", query_params={"conversation_id": response.conversation_id})
+    if response:
+        me.state(AppState).messages = []
+        me.navigate("/conversation", query_params={"conversation_id": response.conversation_id})
+    else:
+        # Handle the error case - could show an error message
+        print("Failed to create conversation")
     yield
 
 

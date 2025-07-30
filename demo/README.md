@@ -60,6 +60,6 @@ Click on the task list to see all the A2A task updates from the remote agents
 
 3. Run the front end example:
     ```bash
-    uv run main.py
+    uv run main.py # PYTHONPATH=/Users/wlin/dev/a2a_with_mcp uv run main.py
     ```
 Note: The application runs on port 12000 by default

@@ -2,7 +2,7 @@ import mesop as me
 from typing import Literal, Optional, Tuple, Any
 from pydantic.dataclasses import dataclass
 import dataclasses
-from common.types import Task, Message
+# from common.types import Task, Message
 from service.types import Conversation, Event
 
 ContentPart = str | dict[str,Any]
@@ -56,8 +56,8 @@ class AppState:
   theme_mode: Literal["system", "light", "dark"] = "system"
 
   current_conversation_id: str = ""
-  conversations: list[StateConversation]
-  messages: list[StateMessage]
+  conversations: list[StateConversation] = dataclasses.field(default_factory=list)
+  messages: list[StateMessage] = dataclasses.field(default_factory=list)
   task_list: list[SessionTask] = dataclasses.field(default_factory=list)
   background_tasks: dict[str,str] = dataclasses.field(default_factory=dict)
   message_aliases: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -65,7 +65,6 @@ class AppState:
   completed_forms: dict[str, dict[str, Any] | None] = dataclasses.field(default_factory=dict)
   # This is used to track the message sent to agent with form data
   form_responses: dict[str, str] = dataclasses.field(default_factory=dict)
-  polling_interval: int = 1
 
   # Added for API key management
   api_key: str = ""
