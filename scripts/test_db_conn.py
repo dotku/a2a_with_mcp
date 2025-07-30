@@ -29,28 +29,30 @@ try:
         password=DB_PASSWORD,
         host=DB_HOST,
         port=DB_PORT,
-        sslmode='require',  # Required for Supabase
-        gssencmode='disable'  # Disable GSSAPI for Supabase
+        sslmode="disable",  # Required for Supabase
+        gssencmode="disable",  # Disable GSSAPI for Supabase
     )
-    
+
     print("✅ Connection successful!")
-    
+
     # Create a cursor
     cur = conn.cursor()
-    
+
     # Test query - get PostgreSQL version
     cur.execute("SELECT version();")
     version = cur.fetchone()
     print(f"\nPostgreSQL version: {version[0]}")
-    
+
     # List all tables
-    cur.execute("""
+    cur.execute(
+        """
         SELECT table_schema, table_name 
         FROM information_schema.tables 
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
         ORDER BY table_schema, table_name;
-    """)
-    
+    """
+    )
+
     tables = cur.fetchall()
     if tables:
         print("\nTables in database:")
@@ -58,41 +60,45 @@ try:
             print(f"  - {schema}.{table}")
     else:
         print("\nNo user tables found in database.")
-    
+
     # Test creating a simple table (optional)
     try:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS test_connection (
                 id SERIAL PRIMARY KEY,
                 test_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 message TEXT
             );
-        """)
+        """
+        )
         conn.commit()
         print("\n✅ Successfully created test table")
-        
+
         # Insert a test record
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO test_connection (message) 
             VALUES ('Connection test successful');
-        """)
+        """
+        )
         conn.commit()
         print("✅ Successfully inserted test record")
-        
+
         # Clean up test table
         cur.execute("DROP TABLE test_connection;")
         conn.commit()
         print("✅ Cleaned up test table")
-        
+
     except psycopg2.Error as e:
         print(f"\n⚠️  Could not create test table (may need permissions): {e}")
         conn.rollback()
-    
+
     # Close cursor and connection
     cur.close()
     conn.close()
     print("\n✅ Connection closed successfully")
-    
+
 except psycopg2.OperationalError as e:
     print(f"\n❌ Connection failed: {e}")
     print("\nPossible fixes:")
@@ -100,9 +106,9 @@ except psycopg2.OperationalError as e:
     print("2. Ensure the database server is running")
     print("3. Verify network connectivity to the host")
     print("4. For Supabase, ensure you're using the correct connection string")
-    
+
 except psycopg2.Error as e:
     print(f"\n❌ Database error: {e}")
-    
+
 except Exception as e:
     print(f"\n❌ Unexpected error: {e}")
